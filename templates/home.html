@@ -1,0 +1,7 @@
+<h1>Voyages entre amis</h1>
+{% if user.is_authenticated %}
+  <p>Bonjour {{ user.email }}</p>
+  <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button>Se déconnecter</button></form>
+{% else %}
+  <a href="{% url 'login' %}">Se connecter</a>
+{% endif %}
