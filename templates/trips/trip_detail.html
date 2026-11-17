@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ trip.name }}</h1>
+
+<h2>Participants</h2>
+<ul>
+  {% for m in members %}
+    <li>{{ m.label }}{% if m.origin_city %} – départ de {{ m.origin_city }}{% endif %}{% if m.is_organizer %} (organisateur){% endif %}</li>
+  {% endfor %}
+</ul>
+
+<h2>Inviter des amis</h2>
+<p>Envoyez-leur ce lien :
+  <input value="{{ invite_url }}" size="50" readonly onclick="this.select()"></p>
+
+<h2>Ma fiche</h2>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
+{% endblock %}

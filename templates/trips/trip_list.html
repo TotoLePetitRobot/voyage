@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Mes voyages</h1>
+{% if user.is_authenticated %}
+  <ul>
+    {% for trip in trips %}
+      <li><a href="{% url 'trip_detail' trip.pk %}">{{ trip.name }}</a></li>
+    {% empty %}
+      <li>Aucun voyage pour l’instant.</li>
+    {% endfor %}
+  </ul>
+  <a href="{% url 'trip_create' %}">Créer un voyage</a>
+{% else %}
+  <p>Connectez-vous pour voir vos voyages.</p>
+{% endif %}
+{% endblock %}
