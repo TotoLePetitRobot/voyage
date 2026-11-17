@@ -33,3 +33,24 @@ class Member(models.Model):
 
     def __str__(self):
         return f"{self.label} – {self.trip}"
+
+class Destination(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="destinations")
+    name = models.CharField("Destination", max_length=120)
+    url = models.URLField("Lien", blank=True)
+    notes = models.TextField("Notes", blank=True)
+    extra_info = models.JSONField(default=dict, blank=True)
+    proposed_by = models.ForeignKey(Member, null=True, blank=True,
+                                    on_delete=models.SET_NULL,
+                                    related_name="proposed_destinations")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    @property
+    def extra_pairs(self):
+        return list(self.extra_info.items())
+
+    def __str__(self):
+        return self.name

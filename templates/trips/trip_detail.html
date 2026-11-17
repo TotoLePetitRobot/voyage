@@ -13,6 +13,29 @@
 <p>Envoyez-leur ce lien :
   <input value="{{ invite_url }}" size="50" readonly onclick="this.select()"></p>
 
+<h2>Destinations proposées</h2>
+<p>
+  <a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a> ·
+  <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a>
+</p>
+{% for d in destinations %}
+  <div>
+    <h3>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</h3>
+    {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}
+    {% if d.notes %}<p>{{ d.notes|linebreaksbr }}</p>{% endif %}
+    {% if d.extra_info %}
+      <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
+    {% endif %}
+    <a href="{% url 'destination_edit' d.pk %}">Modifier</a>
+    {% if me.is_organizer or d.proposed_by_id == me.id %}
+      <form method="post" action="{% url 'destination_delete' d.pk %}" style="display:inline"
+            onsubmit="return confirm('Supprimer cette destination ?')">{% csrf_token %}<button>Supprimer</button></form>
+    {% endif %}
+  </div>
+{% empty %}
+  <p>Aucune destination pour l’instant.</p>
+{% endfor %}
+
 <h2>Ma fiche</h2>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
 {% endblock %}
