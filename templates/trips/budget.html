@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Budget partagé – {{ trip.name }}</h1>
+<p>Total dépensé : <b>{{ total|floatformat:2 }} €</b> ·
+   <a href="{% url 'expense_add' trip.pk %}">Ajouter une dépense</a></p>
+
+<h2>Soldes</h2>
+<ul>
+{% for r in balances %}
+  <li>{{ r.label }} :
+    {% if r.cents > 0 %}doit recevoir <b>{{ r.amount|floatformat:2 }} €</b>
+    {% elif r.cents < 0 %}doit <b>{{ r.amount|floatformat:2 }} €</b>
+    {% else %}à l’équilibre{% endif %}
+  </li>
+{% endfor %}
+</ul>
+
+<h2>Remboursements suggérés</h2>
+<ul>
+{% for t in transfers %}
+  <li>{{ t.payer }} → {{ t.payee }} : <b>{{ t.amount|floatformat:2 }} €</b>
+    {% if t.can_mark %}
+      <form method="post" action="{% url 'settle' trip.pk %}" style="display:inline"
+            onsubmit="return confirm('Marquer ce remboursement comme effectué ?')">{% csrf_token %}
+        <input type="hidden" name="from_id" value="{{ t.payer_id }}">
+        <input type="hidden" name="to_id" value="{{ t.payee_id }}">
+        <input type="hidden" name="amount_cents" value="{{ t.cents }}">
+        <button>Marquer comme payé</button>
+      </form>
+    {% endif %}
+  </li>
+{% empty %}
+  <li>Tout est équilibré.</li>
+{% endfor %}
+</ul>
+
+<h2>Dépenses</h2>
+{% for e in expenses %}
+  <div>
+    {% if e.is_transfer %}
+      <b>Remboursement</b> : {{ e.paid_by.label }} →
+      {% for s in e.shares.all %}{{ s.member.label }}{% endfor %}
+      – {{ e.amount|floatformat:2 }} €
+    {% else %}
+      <b>{{ e.label }}</b> – {{ e.amount|floatformat:2 }} €, payé par {{ e.paid_by.label }}
+    {% endif %}
+    <small>({{ e.date|date:"j F Y" }})</small>
+    {% if not e.is_transfer %}
+      <br><small>Parts :
+      {% for s in e.shares.all %}{{ s.member.label }} {{ s.amount|floatformat:2 }} €{% if not forloop.last %}, {% endif %}{% endfor %}</small>
+    {% endif %}
+    {% if e.can_edit %}
+      {% if not e.is_transfer %}<a href="{% url 'expense_edit' e.pk %}">Modifier</a>{% endif %}
+      <form method="post" action="{% url 'expense_delete' e.pk %}" style="display:inline"
+            onsubmit="return confirm('Supprimer cette dépense ?')">{% csrf_token %}<button>Supprimer</button></form>
+    {% endif %}
+  </div>
+{% empty %}
+  <p>Aucune dépense pour l’instant.</p>
+{% endfor %}
+
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}

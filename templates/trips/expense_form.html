@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ title }}</h1>
+<form method="post">{% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for f in form.main_fields %}
+    <p>{{ f.errors }}{{ f.label_tag }} {{ f }}</p>
+  {% endfor %}
+  <h3>Montants personnalisés</h3>
+  <p><small>À remplir seulement si vous avez choisi « Montants personnalisés ». La somme doit être égale au montant.</small></p>
+  {% for f in form.share_fields %}
+    <p>{{ f.errors }}{{ f.label_tag }} {{ f }}</p>
+  {% endfor %}
+  <button>Enregistrer</button>
+</form>
+<p><a href="{% url 'budget' trip.pk %}">Retour au budget</a></p>
+{% endblock %}

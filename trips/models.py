@@ -2,6 +2,8 @@ import secrets
 from django.conf import settings
 from django.db import models
 from django.core.validators import MinValueValidator
+from decimal import Decimal
+from django.utils import timezone
 
 def make_token():
     return secrets.token_urlsafe(16)
@@ -106,4 +108,37 @@ class DateVote(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["member", "date_option"], name="unique_date_vote")
+        ]
+
+class Expense(models.Model):
+    SPLIT_CHOICES = [("equal", "Parts égales"), ("custom", "Montants personnalisés")]
+
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="expenses")
+    paid_by = models.ForeignKey(Member, on_delete=models.PROTECT, related_name="paid_expenses")
+    created_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="created_expenses")
+    label = models.CharField("Description", max_length=120)
+    amount = models.DecimalField("Montant (€)", max_digits=10, decimal_places=2,
+                                 validators=[MinValueValidator(Decimal("0.01"))])
+    date = models.DateField(default=timezone.localdate)
+    split_mode = models.CharField(max_length=10, choices=SPLIT_CHOICES, default="equal")
+    is_transfer = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+
+    def __str__(self):
+        return f"{self.label} ({self.amount} €)"
+
+
+class ExpenseShare(models.Model):
+    expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="shares")
+    member = models.ForeignKey(Member, on_delete=models.PROTECT, related_name="expense_shares")
+    amount = models.DecimalField(max_digits=10, decimal_places=2,
+                                 validators=[MinValueValidator(0)])
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["expense", "member"], name="unique_share_per_member")
         ]

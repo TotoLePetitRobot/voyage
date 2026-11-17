@@ -14,4 +14,9 @@ urlpatterns = [
     path("dates/<int:opt_pk>/supprimer/", views.date_delete, name="date_delete"),
     path("voyages/<int:pk>/votes/", views.votes, name="votes"),
     path("voyages/<int:pk>/synthese/", views.trip_summary, name="trip_summary"),
+    path("voyages/<int:pk>/budget/", views.budget, name="budget"),
+    path("voyages/<int:pk>/budget/depense/nouvelle/", views.expense_add, name="expense_add"),
+    path("voyages/<int:pk>/budget/rembourser/", views.settle, name="settle"),
+    path("depenses/<int:expense_pk>/modifier/", views.expense_edit, name="expense_edit"),
+    path("depenses/<int:expense_pk>/supprimer/", views.expense_delete, name="expense_delete"),
 ]

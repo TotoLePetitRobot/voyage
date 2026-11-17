@@ -17,7 +17,8 @@
 <h2>Destinations proposées</h2>
 <p>
   <a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a> ·
-  <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a>
+  <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a> · 
+  <a href="{% url 'budget' trip.pk %}">Budget partagé</a>
 </p>
 {% for d in destinations %}
   <div>

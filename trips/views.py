@@ -1,18 +1,23 @@
+from decimal import Decimal
 from statistics import median
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
+from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from .calendar_utils import build_calendar
-from .forms import DateOptionForm, DestinationForm, ImportForm, MemberForm, TripForm
+from .forms import DateOptionForm, DestinationForm, ExpenseForm, ImportForm, MemberForm, TripForm
 from .importers import parse_destinations
-from .models import DateOption, DateVote, Destination, DestVote, Member, Trip
+from .models import DateOption, DateVote, Destination, DestVote, Expense, ExpenseShare, Member, Trip
+from .settlement import compute_balances, suggest_transfers, to_cents
 
 def get_trip_and_member(request, pk):
     trip = get_object_or_404(Trip, pk=pk, members__user=request.user)
@@ -231,3 +236,127 @@ def trip_summary(request, pk):
         "missing_budget": sum(1 for m in members if m.budget is None),
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
     })
+
+def trip_balances(trip):
+    members = list(trip.members.select_related("user"))
+    paid, owed = {}, {}
+    for row in trip.expenses.order_by().values("paid_by").annotate(t=Sum("amount")):
+        paid[row["paid_by"]] = to_cents(row["t"])
+    shares = ExpenseShare.objects.filter(expense__trip=trip).order_by().values("member")
+    for row in shares.annotate(t=Sum("amount")):
+        owed[row["member"]] = to_cents(row["t"])
+    balances = compute_balances([m.pk for m in members], paid, owed)
+    return members, balances, suggest_transfers(balances)
+
+
+@login_required
+def budget(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    members, balances, transfers = trip_balances(trip)
+    by_id = {m.pk: m for m in members}
+    expenses = list(trip.expenses.select_related("paid_by__user")
+                    .prefetch_related("shares__member__user"))
+    for e in expenses:
+        e.can_edit = me.is_organizer or e.created_by_id == me.pk
+    rows = [{"label": m.label, "cents": balances[m.pk],
+             "amount": Decimal(abs(balances[m.pk])) / 100} for m in members]
+    transfer_rows = [{
+        "payer": by_id[a].label, "payee": by_id[b].label,
+        "payer_id": a, "payee_id": b, "cents": c, "amount": Decimal(c) / 100,
+        "can_mark": me.is_organizer or me.pk in (a, b),
+    } for a, b, c in transfers]
+    total = sum((e.amount for e in expenses if not e.is_transfer), Decimal("0"))
+    return render(request, "trips/budget.html", {
+        "trip": trip, "balances": rows, "transfers": transfer_rows,
+        "expenses": expenses, "total": total,
+    })
+
+
+def _save_expense(form, trip, creator, expense=None):
+    cd = form.cleaned_data
+    with transaction.atomic():
+        if expense is None:
+            expense = Expense(trip=trip, created_by=creator)
+        expense.label = cd["label"]
+        expense.paid_by = cd["paid_by"]
+        expense.amount = cd["amount"]
+        expense.date = cd["date"]
+        expense.split_mode = cd["split_mode"]
+        expense.save()
+        expense.shares.all().delete()
+        ExpenseShare.objects.bulk_create([
+            ExpenseShare(expense=expense, member_id=mid, amount=Decimal(c) / 100)
+            for mid, c in cd["shares_cents"].items()
+        ])
+    return expense
+
+
+@login_required
+def expense_add(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    initial = {"paid_by": me.pk, "date": timezone.localdate(),
+               "participants": [m.pk for m in trip.members.all()]}
+    form = ExpenseForm(request.POST or None, trip=trip, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        _save_expense(form, trip, me)
+        return redirect("budget", pk=trip.pk)
+    return render(request, "trips/expense_form.html",
+                  {"form": form, "trip": trip, "title": "Nouvelle dépense"})
+
+
+@login_required
+def expense_edit(request, expense_pk):
+    expense = get_object_or_404(Expense, pk=expense_pk, trip__members__user=request.user)
+    trip = expense.trip
+    me = trip.members.get(user=request.user)
+    if expense.is_transfer or not (me.is_organizer or expense.created_by_id == me.pk):
+        raise PermissionDenied
+    shares = {s.member_id: s.amount for s in expense.shares.all()}
+    initial = {"label": expense.label, "amount": expense.amount, "date": expense.date,
+               "paid_by": expense.paid_by_id, "split_mode": expense.split_mode,
+               "participants": list(shares)}
+    for mid, amt in shares.items():
+        initial[f"share_{mid}"] = amt
+    form = ExpenseForm(request.POST or None, trip=trip, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        _save_expense(form, trip, me, expense)
+        return redirect("budget", pk=trip.pk)
+    return render(request, "trips/expense_form.html",
+                  {"form": form, "trip": trip, "title": f"Modifier : {expense.label}"})
+
+
+@login_required
+@require_POST
+def expense_delete(request, expense_pk):
+    expense = get_object_or_404(Expense, pk=expense_pk, trip__members__user=request.user)
+    me = expense.trip.members.get(user=request.user)
+    if not (me.is_organizer or expense.created_by_id == me.pk):
+        raise PermissionDenied
+    trip_pk = expense.trip_id
+    expense.delete()
+    return redirect("budget", pk=trip_pk)
+
+
+@login_required
+@require_POST
+def settle(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    try:
+        payer_id = int(request.POST["from_id"])
+        payee_id = int(request.POST["to_id"])
+        cents = int(request.POST["amount_cents"])
+    except (KeyError, ValueError):
+        raise Http404
+    _, _, transfers = trip_balances(trip)
+    if (payer_id, payee_id, cents) not in transfers:
+        raise Http404
+    if not (me.is_organizer or me.pk in (payer_id, payee_id)):
+        raise PermissionDenied
+    with transaction.atomic():
+        e = Expense.objects.create(
+            trip=trip, paid_by_id=payer_id, created_by=me, label="Remboursement",
+            amount=Decimal(cents) / 100, split_mode="custom", is_transfer=True,
+        )
+        ExpenseShare.objects.create(expense=e, member_id=payee_id, amount=Decimal(cents) / 100)
+    messages.success(request, "Remboursement enregistré.")
+    return redirect("budget", pk=trip.pk)
