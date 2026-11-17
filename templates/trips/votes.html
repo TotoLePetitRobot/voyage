@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Mes votes – {{ trip.name }}</h1>
+<p>Vos votes individuels ne sont pas montrés aux autres, seulement les totaux.</p>
+<form method="post">{% csrf_token %}
+
+<h2>Destinations</h2>
+{% for d in destinations %}
+  <fieldset><legend>{{ d.name }}</legend>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="2" {% if d.my_score == 2 %}checked{% endif %}> Oui</label>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="1" {% if d.my_score == 1 %}checked{% endif %}> Peut-être</label>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="0" {% if d.my_score == 0 %}checked{% endif %}> Non</label>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="" {% if d.my_score is None %}checked{% endif %}> Pas d’avis</label>
+  </fieldset>
+{% empty %}
+  <p>Aucune destination proposée.</p>
+{% endfor %}
+
+<h2>Périodes</h2>
+{% for o in dates %}
+  <fieldset><legend>Du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}</legend>
+    <label><input type="radio" name="date_{{ o.pk }}" value="2" {% if o.my_score == 2 %}checked{% endif %}> Oui</label>
+    <label><input type="radio" name="date_{{ o.pk }}" value="1" {% if o.my_score == 1 %}checked{% endif %}> Peut-être</label>
+    <label><input type="radio" name="date_{{ o.pk }}" value="0" {% if o.my_score == 0 %}checked{% endif %}> Non</label>
+    <label><input type="radio" name="date_{{ o.pk }}" value="" {% if o.my_score is None %}checked{% endif %}> Pas d’avis</label>
+  </fieldset>
+{% empty %}
+  <p>Aucune période proposée.</p>
+{% endfor %}
+
+<p><button>Enregistrer mes votes</button></p>
+</form>
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}

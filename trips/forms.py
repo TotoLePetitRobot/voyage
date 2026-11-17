@@ -1,6 +1,9 @@
-from django import forms
-from .models import Trip, Member, Destination
+from datetime import timedelta
 
+from django import forms
+from django.utils import timezone
+
+from .models import DateOption, Destination, Member, Trip
 
 class TripForm(forms.ModelForm):
     class Meta:
@@ -11,7 +14,7 @@ class TripForm(forms.ModelForm):
 class MemberForm(forms.ModelForm):
     class Meta:
         model = Member
-        fields = ["display_name", "origin_city"]
+        fields = ["display_name", "origin_city", "budget", "budget_anonymous"]
 
 
 class DestinationForm(forms.ModelForm):
@@ -63,3 +66,26 @@ class ImportForm(forms.Form):
         if f.size > 1_000_000:
             raise forms.ValidationError("Fichier trop volumineux (1 Mo maximum).")
         return f
+
+class DateOptionForm(forms.ModelForm):
+    start_date = forms.DateField(label="Arrivée", widget=forms.DateInput(attrs={"type": "date"}))
+    end_date = forms.DateField(label="Départ", widget=forms.DateInput(attrs={"type": "date"}))
+
+    class Meta:
+        model = DateOption
+        fields = ["start_date", "end_date"]
+
+    def clean(self):
+        cleaned = super().clean()
+        start, end = cleaned.get("start_date"), cleaned.get("end_date")
+        if start and end:
+            today = timezone.localdate()
+            if end < start:
+                raise forms.ValidationError("La date de départ doit être après l’arrivée.")
+            if (end - start).days > 60:
+                raise forms.ValidationError("Une période ne peut pas dépasser 60 nuits.")
+            if start < today:
+                raise forms.ValidationError("La période ne peut pas commencer dans le passé.")
+            if start > today + timedelta(days=730):
+                raise forms.ValidationError("Choisissez une date dans les deux prochaines années.")
+        return cleaned

@@ -1,0 +1,19 @@
+<style>
+  .cal{border-collapse:collapse;margin:1em 1em 1em 0;display:inline-table;vertical-align:top}
+  .cal caption{font-weight:bold;text-align:left}
+  .cal td,.cal th{border:1px solid #bbb;width:3em;height:2.6em;text-align:center;font-size:.85em}
+  .cal .busy{background:#cfe8ff;color:#000}
+</style>
+{% for month in months %}
+<table class="cal">
+  <caption>{{ month.title }}</caption>
+  <thead><tr><th>Lun</th><th>Mar</th><th>Mer</th><th>Jeu</th><th>Ven</th><th>Sam</th><th>Dim</th></tr></thead>
+  <tbody>
+  {% for week in month.weeks %}<tr>
+    {% for c in week %}
+      {% if c %}<td{% if c.letters %} class="busy"{% endif %}>{{ c.day }}{% if c.letters %}<br><b>{{ c.letters|join:"" }}</b>{% endif %}</td>{% else %}<td></td>{% endif %}
+    {% endfor %}
+  </tr>{% endfor %}
+  </tbody>
+</table>
+{% endfor %}

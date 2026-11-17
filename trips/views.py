@@ -1,14 +1,18 @@
+from statistics import median
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db.models import Count, Q, Sum
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
-from .forms import DestinationForm, ImportForm, MemberForm, TripForm
+from .calendar_utils import build_calendar
+from .forms import DateOptionForm, DestinationForm, ImportForm, MemberForm, TripForm
 from .importers import parse_destinations
-from .models import Destination, Member, Trip
-
+from .models import DateOption, DateVote, Destination, DestVote, Member, Trip
 
 def get_trip_and_member(request, pk):
     trip = get_object_or_404(Trip, pk=pk, members__user=request.user)
@@ -125,3 +129,105 @@ def destination_import(request, pk):
             )
             return redirect("trip_detail", pk=trip.pk)
     return render(request, "trips/destination_import.html", {"form": form, "trip": trip})
+
+MAX_DATE_OPTIONS = 26
+MIN_ANONYMOUS_FOR_STATS = 3
+
+
+@login_required
+def date_list(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    options = list(trip.date_options.select_related("proposed_by__user"))[:MAX_DATE_OPTIONS]
+    form = DateOptionForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        start, end = form.cleaned_data["start_date"], form.cleaned_data["end_date"]
+        if trip.date_options.count() >= MAX_DATE_OPTIONS:
+            form.add_error(None, f"Maximum {MAX_DATE_OPTIONS} périodes par voyage.")
+        elif trip.date_options.filter(start_date=start, end_date=end).exists():
+            form.add_error(None, "Cette période existe déjà.")
+        else:
+            opt = form.save(commit=False)
+            opt.trip, opt.proposed_by = trip, me
+            opt.save()
+            return redirect("date_list", pk=trip.pk)
+    months, legend, truncated = build_calendar(options)
+    return render(request, "trips/dates.html", {
+        "trip": trip, "me": me, "form": form,
+        "months": months, "legend": legend, "truncated": truncated,
+    })
+
+
+@login_required
+@require_POST
+def date_delete(request, opt_pk):
+    opt = get_object_or_404(DateOption, pk=opt_pk, trip__members__user=request.user)
+    me = opt.trip.members.get(user=request.user)
+    if not (me.is_organizer or opt.proposed_by_id == me.id):
+        raise PermissionDenied
+    trip_pk = opt.trip_id
+    opt.delete()
+    return redirect("date_list", pk=trip_pk)
+
+
+def _save_votes(request, me, items, prefix, model, fk):
+    for item in items:
+        raw = request.POST.get(f"{prefix}_{item.pk}", "")
+        if raw in ("0", "1", "2"):
+            model.objects.update_or_create(member=me, **{fk: item}, defaults={"score": int(raw)})
+        else:
+            model.objects.filter(member=me, **{fk: item}).delete()
+
+
+@login_required
+def votes(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    destinations = list(trip.destinations.all())
+    dates = list(trip.date_options.all())
+    if request.method == "POST":
+        _save_votes(request, me, destinations, "dest", DestVote, "destination")
+        _save_votes(request, me, dates, "date", DateVote, "date_option")
+        messages.success(request, "Vos votes sont enregistrés.")
+        return redirect("trip_summary", pk=trip.pk)
+    dest_scores = {v.destination_id: v.score for v in me.dest_votes.all()}
+    date_scores = {v.date_option_id: v.score for v in me.date_votes.all()}
+    for d in destinations:
+        d.my_score = dest_scores.get(d.pk)
+    for o in dates:
+        o.my_score = date_scores.get(o.pk)
+    return render(request, "trips/votes.html",
+                  {"trip": trip, "destinations": destinations, "dates": dates})
+
+
+def with_scores(qs):
+    return qs.annotate(
+        yes=Count("votes", filter=Q(votes__score=2)),
+        maybe=Count("votes", filter=Q(votes__score=1)),
+        no=Count("votes", filter=Q(votes__score=0)),
+        total=Coalesce(Sum("votes__score"), 0),
+    )
+
+
+def budget_summary(members):
+    named = [m for m in members if m.budget is not None and not m.budget_anonymous]
+    anon = [m.budget for m in members if m.budget is not None and m.budget_anonymous]
+    stats = None
+    if len(anon) >= MIN_ANONYMOUS_FOR_STATS:
+        stats = {"min": min(anon), "median": median(anon), "max": max(anon)}
+    return named, len(anon), stats
+
+
+@login_required
+def trip_summary(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    members = list(trip.members.select_related("user"))
+    named, anon_count, anon_stats = budget_summary(members)
+    return render(request, "trips/summary.html", {
+        "trip": trip,
+        "destinations": with_scores(trip.destinations.all()).order_by("-total", "-yes", "name"),
+        "dates": with_scores(trip.date_options.all()).order_by("-total", "-yes", "start_date"),
+        "named_budgets": named,
+        "anon_count": anon_count,
+        "anon_stats": anon_stats,
+        "missing_budget": sum(1 for m in members if m.budget is None),
+        "min_anon": MIN_ANONYMOUS_FOR_STATS,
+    })

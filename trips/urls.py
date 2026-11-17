@@ -10,4 +10,8 @@ urlpatterns = [
     path("voyages/<int:pk>/destinations/import/", views.destination_import, name="destination_import"),
     path("destinations/<int:dest_pk>/modifier/", views.destination_edit, name="destination_edit"),
     path("destinations/<int:dest_pk>/supprimer/", views.destination_delete, name="destination_delete"),
+    path("voyages/<int:pk>/dates/", views.date_list, name="date_list"),
+    path("dates/<int:opt_pk>/supprimer/", views.date_delete, name="date_delete"),
+    path("voyages/<int:pk>/votes/", views.votes, name="votes"),
+    path("voyages/<int:pk>/synthese/", views.trip_summary, name="trip_summary"),
 ]

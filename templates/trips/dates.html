@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Périodes envisagées – {{ trip.name }}</h1>
+
+{% include "trips/_calendar.html" %}
+{% if truncated %}<p><small>Calendrier limité à 12 mois.</small></p>{% endif %}
+
+<ul>
+{% for letter, o in legend %}
+  <li><b>{{ letter }}</b> : du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}
+    ({{ o.nights }} nuit{{ o.nights|pluralize }}){% if o.proposed_by %} – proposée par {{ o.proposed_by.label }}{% endif %}
+    {% if me.is_organizer or o.proposed_by_id == me.id %}
+      <form method="post" action="{% url 'date_delete' o.pk %}" style="display:inline"
+            onsubmit="return confirm('Supprimer cette période ?')">{% csrf_token %}<button>Supprimer</button></form>
+    {% endif %}
+  </li>
+{% empty %}
+  <li>Aucune période proposée.</li>
+{% endfor %}
+</ul>
+
+<h2>Proposer une période</h2>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Ajouter</button></form>
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}
