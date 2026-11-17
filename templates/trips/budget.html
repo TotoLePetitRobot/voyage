@@ -3,6 +3,7 @@
 <h1>Budget partagé – {{ trip.name }}</h1>
 <p>Total dépensé : <b>{{ total|floatformat:2 }} €</b> ·
    <a href="{% url 'expense_add' trip.pk %}">Ajouter une dépense</a></p>
+<p><a href="{% url 'solidarity' trip.pk %}">Ma solidarité (privé)</a></p>
 
 <h2>Soldes</h2>
 <ul>
@@ -15,6 +16,11 @@
 {% endfor %}
 </ul>
 
+{% if my_detail %}
+<p><b>Votre part, en détail</b> (visible par vous seul) : {{ my_detail.base|floatformat:2 }} € de base,
+   {{ my_detail.pooled|floatformat:2 }} € après partage par catégorie,
+   {{ my_detail.final|floatformat:2 }} € après plafond et prises en charge.</p>
+{% endif %}
 <h2>Remboursements suggérés</h2>
 <ul>
 {% for t in transfers %}
@@ -42,7 +48,7 @@
       {% for s in e.shares.all %}{{ s.member.label }}{% endfor %}
       – {{ e.amount|floatformat:2 }} €
     {% else %}
-      <b>{{ e.label }}</b> – {{ e.amount|floatformat:2 }} €, payé par {{ e.paid_by.label }}
+      <b>{{ e.label }}</b> ({{ e.get_category_display }}) – {{ e.amount|floatformat:2 }} €, payé par {{ e.paid_by.label }}
     {% endif %}
     <small>({{ e.date|date:"j F Y" }})</small>
     {% if not e.is_transfer %}

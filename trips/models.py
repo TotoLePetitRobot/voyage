@@ -1,7 +1,7 @@
 import secrets
 from django.conf import settings
 from django.db import models
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from decimal import Decimal
 from django.utils import timezone
 
@@ -31,6 +31,10 @@ class Member(models.Model):
         help_text="Il ne sera pas affiché avec votre nom. Il compte seulement dans une "
                   "statistique de groupe, visible à partir de 3 budgets anonymes.",
     )
+    pay_cap = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True,
+                                  validators=[MinValueValidator(0)])
+    extra_max = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True,
+                                    validators=[MinValueValidator(0)])
     is_organizer = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
 
@@ -110,6 +114,14 @@ class DateVote(models.Model):
             models.UniqueConstraint(fields=["member", "date_option"], name="unique_date_vote")
         ]
 
+
+CATEGORY_CHOICES = [
+    ("logement", "Logement"),
+    ("transport", "Transport"),
+    ("nourriture", "Nourriture"),
+    ("activites", "Activités"),
+    ("autre", "Autre"),
+]
 class Expense(models.Model):
     SPLIT_CHOICES = [("equal", "Parts égales"), ("custom", "Montants personnalisés")]
 
@@ -118,6 +130,8 @@ class Expense(models.Model):
     created_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
                                    related_name="created_expenses")
     label = models.CharField("Description", max_length=120)
+    category = models.CharField("Catégorie", max_length=12, choices=CATEGORY_CHOICES,
+                                default="autre")
     amount = models.DecimalField("Montant (€)", max_digits=10, decimal_places=2,
                                  validators=[MinValueValidator(Decimal("0.01"))])
     date = models.DateField(default=timezone.localdate)
@@ -141,4 +155,18 @@ class ExpenseShare(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["expense", "member"], name="unique_share_per_member")
+        ]
+
+class SolidarityPref(models.Model):
+    member = models.ForeignKey(Member, on_delete=models.CASCADE,
+                               related_name="solidarity_prefs")
+    category = models.CharField(max_length=12, choices=CATEGORY_CHOICES)
+    weight = models.DecimalField(
+        max_digits=4, decimal_places=2, default=Decimal("1.00"),
+        validators=[MinValueValidator(Decimal("0.10")), MaxValueValidator(Decimal("5"))],
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["member", "category"], name="unique_pref_per_category")
         ]

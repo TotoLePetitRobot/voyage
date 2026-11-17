@@ -4,7 +4,7 @@ from decimal import Decimal
 from django import forms
 from django.utils import timezone
 
-from .models import DateOption, Destination, Expense, Member, Trip
+from .models import CATEGORY_CHOICES, DateOption, Destination, Expense, Member, Trip
 from .settlement import equal_split, to_cents
 
 class TripForm(forms.ModelForm):
@@ -99,6 +99,7 @@ class ExpenseForm(forms.Form):
         min_value=Decimal("0.01"), max_value=Decimal("100000"),
         widget=forms.NumberInput(attrs={"step": "0.01", "min": "0.01"}),
     )
+    category = forms.ChoiceField(label="Catégorie", choices=CATEGORY_CHOICES, initial="autre")
     date = forms.DateField(label="Date", widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"))
     paid_by = forms.ModelChoiceField(queryset=Member.objects.none(), label="Payé par")
     split_mode = forms.ChoiceField(label="Répartition", choices=Expense.SPLIT_CHOICES,
@@ -124,8 +125,8 @@ class ExpenseForm(forms.Form):
 
     @property
     def main_fields(self):
-        return [self[n] for n in ("label", "amount", "date", "paid_by", "split_mode", "participants")]
-
+        return [self[n] for n in ("label", "amount", "category", "date", "paid_by",
+                                  "split_mode", "participants")]
     @property
     def share_fields(self):
         return [self[f"share_{m.pk}"] for m in self.members]
@@ -153,4 +154,40 @@ class ExpenseForm(forms.Form):
                     f"doit être égale au montant ({total / 100:.2f} €)."
                 )
         cleaned["shares_cents"] = shares
+        return cleaned
+
+class SolidarityForm(forms.Form):
+    pay_cap = forms.DecimalField(
+        label="Plafond : je ne peux pas payer plus de (€ au total)", required=False,
+        min_value=Decimal("0"), max_digits=8, decimal_places=2,
+        widget=forms.NumberInput(attrs={"step": "0.01", "min": "0"}),
+    )
+    extra_max = forms.DecimalField(
+        label="Je peux prendre en charge jusqu’à (€ en plus)", required=False,
+        min_value=Decimal("0"), max_digits=8, decimal_places=2,
+        widget=forms.NumberInput(attrs={"step": "0.01", "min": "0"}),
+    )
+
+    def __init__(self, *args, member, **kwargs):
+        super().__init__(*args, **kwargs)
+        prefs = {p.category: p.weight for p in member.solidarity_prefs.all()}
+        self.cats = []
+        for code, label in CATEGORY_CHOICES:
+            self.fields[f"opt_{code}"] = forms.BooleanField(
+                required=False, initial=code in prefs, label=label)
+            self.fields[f"w_{code}"] = forms.DecimalField(
+                required=False, min_value=Decimal("0.10"), max_value=Decimal("5"),
+                max_digits=4, decimal_places=2, initial=prefs.get(code, Decimal("1.00")),
+                widget=forms.NumberInput(attrs={"step": "0.05", "min": "0.1", "max": "5"}),
+            )
+            self.cats.append((label, self[f"opt_{code}"], self[f"w_{code}"]))
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("pay_cap") is not None and cleaned.get("extra_max") is not None:
+            raise forms.ValidationError(
+                "Choisissez soit un plafond, soit une capacité de prise en charge, pas les deux.")
+        for code, _ in CATEGORY_CHOICES:
+            if cleaned.get(f"opt_{code}") and cleaned.get(f"w_{code}") is None:
+                self.add_error(f"w_{code}", "Indiquez un poids (1 = part normale).")
         return cleaned

@@ -19,4 +19,5 @@ urlpatterns = [
     path("voyages/<int:pk>/budget/rembourser/", views.settle, name="settle"),
     path("depenses/<int:expense_pk>/modifier/", views.expense_edit, name="expense_edit"),
     path("depenses/<int:expense_pk>/supprimer/", views.expense_delete, name="expense_delete"),
+    path("voyages/<int:pk>/solidarite/", views.solidarity, name="solidarity"),
 ]

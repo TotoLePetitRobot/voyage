@@ -14,10 +14,13 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from .calendar_utils import build_calendar
-from .forms import DateOptionForm, DestinationForm, ExpenseForm, ImportForm, MemberForm, TripForm
+from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
+                    MemberForm, SolidarityForm, TripForm)
 from .importers import parse_destinations
-from .models import DateOption, DateVote, Destination, DestVote, Expense, ExpenseShare, Member, Trip
-from .settlement import compute_balances, suggest_transfers, to_cents
+from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
+                     Expense, ExpenseShare, Member, SolidarityPref, Trip)
+from .settlement import (compute_balances, compute_owed, suggest_transfers, 
+                         to_cents, to_milli)
 
 def get_trip_and_member(request, pk):
     trip = get_object_or_404(Trip, pk=pk, members__user=request.user)
@@ -237,22 +240,51 @@ def trip_summary(request, pk):
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
     })
 
-def trip_balances(trip):
+def trip_calc(trip):
     members = list(trip.members.select_related("user"))
-    paid, owed = {}, {}
+    ids = [m.pk for m in members]
+    paid = {}
     for row in trip.expenses.order_by().values("paid_by").annotate(t=Sum("amount")):
         paid[row["paid_by"]] = to_cents(row["t"])
-    shares = ExpenseShare.objects.filter(expense__trip=trip).order_by().values("member")
-    for row in shares.annotate(t=Sum("amount")):
-        owed[row["member"]] = to_cents(row["t"])
-    balances = compute_balances([m.pk for m in members], paid, owed)
-    return members, balances, suggest_transfers(balances)
 
+    base, transfer_owed = {}, {}
+    rows = (ExpenseShare.objects.filter(expense__trip=trip).order_by()
+            .values("expense__category", "expense__is_transfer", "member")
+            .annotate(t=Sum("amount")))
+    for r in rows:
+        cents = to_cents(r["t"])
+        if r["expense__is_transfer"]:
+            transfer_owed[r["member"]] = transfer_owed.get(r["member"], 0) + cents
+        else:
+            key = (r["expense__category"], r["member"])
+            base[key] = base.get(key, 0) + cents
+
+    pools = {}
+    for p in SolidarityPref.objects.filter(member__trip=trip):
+        pools.setdefault(p.category, {})[p.member_id] = to_milli(p.weight)
+    caps = {m.pk: to_cents(m.pay_cap) for m in members if m.pay_cap is not None}
+    extras = {m.pk: to_cents(m.extra_max) for m in members if m.extra_max is not None}
+
+    base_owed, pooled, final = compute_owed(base, pools, caps, extras)
+    owed = {m: final.get(m, 0) + transfer_owed.get(m, 0) for m in ids}
+    balances = compute_balances(ids, paid, owed)
+    detail = {m: {"base": base_owed.get(m, 0), "pooled": pooled.get(m, 0),
+                  "final": final.get(m, 0)} for m in ids}
+    return members, balances, suggest_transfers(balances), detail
+
+
+def trip_balances(trip):
+    members, balances, transfers, _ = trip_calc(trip)
+    return members, balances, transfers
 
 @login_required
 def budget(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    members, balances, transfers = trip_balances(trip)
+    members, balances, transfers, detail = trip_calc(trip)
+    mine = detail[me.pk]
+    my_detail = None
+    if mine["base"] != mine["pooled"] or mine["pooled"] != mine["final"]:
+        my_detail = {k: Decimal(v) / 100 for k, v in mine.items()}
     by_id = {m.pk: m for m in members}
     expenses = list(trip.expenses.select_related("paid_by__user")
                     .prefetch_related("shares__member__user"))
@@ -268,7 +300,7 @@ def budget(request, pk):
     total = sum((e.amount for e in expenses if not e.is_transfer), Decimal("0"))
     return render(request, "trips/budget.html", {
         "trip": trip, "balances": rows, "transfers": transfer_rows,
-        "expenses": expenses, "total": total,
+        "expenses": expenses, "total": total, "my_detail": my_detail,
     })
 
 
@@ -278,6 +310,7 @@ def _save_expense(form, trip, creator, expense=None):
         if expense is None:
             expense = Expense(trip=trip, created_by=creator)
         expense.label = cd["label"]
+        expense.category = cd["category"]
         expense.paid_by = cd["paid_by"]
         expense.amount = cd["amount"]
         expense.date = cd["date"]
@@ -312,7 +345,8 @@ def expense_edit(request, expense_pk):
     if expense.is_transfer or not (me.is_organizer or expense.created_by_id == me.pk):
         raise PermissionDenied
     shares = {s.member_id: s.amount for s in expense.shares.all()}
-    initial = {"label": expense.label, "amount": expense.amount, "date": expense.date,
+    initial = {"label": expense.label, "amount": expense.amount, 
+               "category": expense.category, "date": expense.date,
                "paid_by": expense.paid_by_id, "split_mode": expense.split_mode,
                "participants": list(shares)}
     for mid, amt in shares.items():
@@ -360,3 +394,23 @@ def settle(request, pk):
         ExpenseShare.objects.create(expense=e, member_id=payee_id, amount=Decimal(cents) / 100)
     messages.success(request, "Remboursement enregistré.")
     return redirect("budget", pk=trip.pk)
+
+@login_required
+def solidarity(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    form = SolidarityForm(request.POST or None, member=me,
+                          initial={"pay_cap": me.pay_cap, "extra_max": me.extra_max})
+    if request.method == "POST" and form.is_valid():
+        cd = form.cleaned_data
+        with transaction.atomic():
+            me.pay_cap, me.extra_max = cd["pay_cap"], cd["extra_max"]
+            me.save(update_fields=["pay_cap", "extra_max"])
+            for code, _ in CATEGORY_CHOICES:
+                if cd.get(f"opt_{code}"):
+                    SolidarityPref.objects.update_or_create(
+                        member=me, category=code, defaults={"weight": cd[f"w_{code}"]})
+                else:
+                    SolidarityPref.objects.filter(member=me, category=code).delete()
+        messages.success(request, "Vos choix sont enregistrés. Ils ne sont visibles que par vous.")
+        return redirect("budget", pk=trip.pk)
+    return render(request, "trips/solidarity.html", {"form": form, "trip": trip})

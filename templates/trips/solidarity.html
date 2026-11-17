@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Ma solidarité – {{ trip.name }}</h1>
+<p>Ces choix sont <b>facultatifs</b> et ne concernent que vous : personne d’autre ne peut fixer votre poids ou votre plafond, et ils ne sont affichés qu’à vous. Si vous ne cochez rien, vous payez simplement votre part normale.</p>
+<form method="post">{% csrf_token %}
+  {{ form.non_field_errors }}
+
+  <h2>Partage selon les moyens, par catégorie</h2>
+  <p><small>Cochez une catégorie pour que votre part soit recalculée avec les autres personnes qui l’ont aussi cochée. Le total de ce groupe ne change pas, seule sa répartition change. Un poids de 1,2 signifie que vous payez 1,2 part là où un poids de 1 en paie une. Si tout le monde met 1, les dépenses du groupe sont simplement mises en commun, ce qui convient bien au transport.</small></p>
+  {% for label, opt, w in form.cats %}
+    <p>{{ opt.errors }}{{ w.errors }}{{ opt }} <label for="{{ opt.id_for_label }}">{{ label }}</label> – poids : {{ w }}</p>
+  {% endfor %}
+
+  <h2>Plafond ou prise en charge</h2>
+  <p><small>Remplissez <b>un seul</b> des deux champs, ou aucun. Le surplus des personnes plafonnées est réparti entre celles qui ont indiqué pouvoir prendre en charge un supplément. Si ces offres ne suffisent pas, la personne plafonnée paie la différence.</small></p>
+  <p>{{ form.pay_cap.errors }}{{ form.pay_cap.label_tag }} {{ form.pay_cap }}</p>
+  <p>{{ form.extra_max.errors }}{{ form.extra_max.label_tag }} {{ form.extra_max }}</p>
+
+  <button>Enregistrer</button>
+</form>
+<p><a href="{% url 'budget' trip.pk %}">Retour au budget</a></p>
+{% endblock %}

@@ -1,11 +1,12 @@
 import random
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
-from .models import Expense, Member, Trip
-from .settlement import equal_split, suggest_transfers
+from .models import Expense, ExpenseShare, Member, SolidarityPref, Trip
+from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .views import trip_balances
 
 
@@ -50,6 +51,7 @@ class BudgetViewTests(TestCase):
     def add_expense(self, amount="30.00"):
         return self.client.post(reverse("expense_add", args=[self.trip.pk]), {
             "label": "Courses", "amount": amount, "date": "2026-11-20",
+            "category": "autre",
             "paid_by": self.ma.pk, "split_mode": "equal",
             "participants": [self.ma.pk, self.mb.pk],
         })
@@ -84,3 +86,77 @@ class BudgetViewTests(TestCase):
         self.assertEqual(self.client.post(url, {**data, "amount_cents": 1}).status_code, 404)
         self.assertEqual(self.client.post(url, {**data, "amount_cents": 1500}).status_code, 302)
         self.assertEqual(trip_balances(self.trip)[2], [])
+
+class EquityLogicTests(SimpleTestCase):
+    def test_allocate_is_exact(self):
+        self.assertEqual(allocate(1000, {1: 1000, 2: 1000, 3: 1000}), {1: 334, 2: 333, 3: 333})
+
+    def test_weighted_housing(self):
+        base = {("logement", m): 20000 for m in (1, 2, 3)}
+        _, pooled, _ = compute_owed(base, {"logement": {1: 1200, 2: 800}}, {}, {})
+        self.assertEqual(pooled, {1: 24000, 2: 16000, 3: 20000})
+
+    def test_cap_covered_by_volunteer(self):
+        base = {("autre", m): 10000 for m in (1, 2, 3)}
+        _, _, final = compute_owed(base, {}, {3: 4000}, {1: 10000})
+        self.assertEqual(final, {1: 16000, 2: 10000, 3: 4000})
+
+    def test_cap_with_insufficient_offers(self):
+        base = {("autre", m): 20000 for m in (1, 2, 3)}
+        _, _, final = compute_owed(base, {}, {3: 10000}, {1: 3000})
+        self.assertEqual(final, {1: 23000, 2: 20000, 3: 17000})
+
+    def test_totals_always_preserved(self):
+        rng = random.Random(11)
+        for _ in range(500):
+            ids = list(range(1, rng.randint(2, 7) + 1))
+            base = {(c, m): rng.randint(0, 50000) for c in "abc" for m in ids}
+            pools = {c: {m: rng.randint(100, 3000) for m in ids if rng.random() < .6} for c in "abc"}
+            pools = {c: w for c, w in pools.items() if w}
+            caps = {m: rng.randint(0, 80000) for m in ids if rng.random() < .4}
+            extras = {m: rng.randint(0, 40000) for m in ids if rng.random() < .4 and m not in caps}
+            _, _, final = compute_owed(base, pools, caps, extras)
+            self.assertEqual(sum(final.values()), sum(base.values()))
+            self.assertTrue(all(v >= 0 for v in final.values()))
+
+
+class EquityBalanceTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.trip = Trip.objects.create(name="Test")
+        self.m = []
+        for i, name in enumerate("abc"):
+            user = U.objects.create_user(f"{name}@example.com", "pw-test-123")
+            self.m.append(Member.objects.create(trip=self.trip, user=user, is_organizer=(i == 0)))
+
+    def expense(self, payer, amount, category, shares):
+        e = Expense.objects.create(trip=self.trip, paid_by=payer, created_by=payer,
+                                   label="x", amount=Decimal(amount), category=category,
+                                   split_mode="custom")
+        for member, share in shares.items():
+            ExpenseShare.objects.create(expense=e, member=member, amount=Decimal(share))
+
+    def test_transport_pooling_between_two_members(self):
+        a, b, c = self.m
+        self.expense(a, "100", "transport", {a: "100"})
+        self.expense(b, "300", "transport", {b: "300"})
+        SolidarityPref.objects.create(member=a, category="transport", weight=Decimal("1"))
+        SolidarityPref.objects.create(member=b, category="transport", weight=Decimal("1"))
+        _, balances, _ = trip_balances(self.trip)
+        self.assertEqual(balances, {a.pk: -10000, b.pk: 10000, c.pk: 0})
+
+    def test_weights_only_affect_opted_in_members(self):
+        a, b, c = self.m
+        self.expense(a, "600", "logement", {a: "200", b: "200", c: "200"})
+        SolidarityPref.objects.create(member=a, category="logement", weight=Decimal("1.2"))
+        SolidarityPref.objects.create(member=b, category="logement", weight=Decimal("0.8"))
+        _, balances, _ = trip_balances(self.trip)
+        self.assertEqual(balances, {a.pk: 36000, b.pk: -16000, c.pk: -20000})
+
+    def test_cap_and_volunteer(self):
+        a, b, c = self.m
+        self.expense(a, "300", "autre", {a: "100", b: "100", c: "100"})
+        c.pay_cap = Decimal("40"); c.save()
+        a.extra_max = Decimal("100"); a.save()
+        _, balances, _ = trip_balances(self.trip)
+        self.assertEqual(balances, {a.pk: 14000, b.pk: -10000, c.pk: -4000})
