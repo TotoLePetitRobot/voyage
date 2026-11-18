@@ -1,11 +1,15 @@
 import random
-from datetime import date
+import sqlite3
+import tempfile
+from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
+from .backup import backup_sqlite
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Member, 
                      SolidarityPref, Trip)
@@ -229,3 +233,26 @@ class SearchViewTests(TestCase):
         self.client.force_login(self.a)
         r = self.client.get(self.url)
         self.assertContains(r, "Lyon Chamonix-Mont-Blanc le 6 février")
+
+class BackupTests(SimpleTestCase):
+    def test_copy_and_prune(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            con = sqlite3.connect(db)
+            con.execute("create table t(x)")
+            con.execute("insert into t values (42)")
+            con.commit()
+            con.close()
+            for i in range(5):
+                backup_sqlite(db, Path(tmp) / "b", keep=3, now=datetime(2026, 11, 18, 10, 0, i))
+            files = sorted((Path(tmp) / "b").glob("db-*.sqlite3"))
+            self.assertEqual(len(files), 3)
+            self.assertTrue(files[-1].name.endswith("100004.sqlite3"))
+            con = sqlite3.connect(files[-1])
+            self.assertEqual(con.execute("select x from t").fetchone(), (42,))
+            con.close()
+
+    def test_missing_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                backup_sqlite(Path(tmp) / "nope.sqlite3", tmp)
