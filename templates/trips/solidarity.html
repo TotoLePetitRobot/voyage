@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Ma solidarité – {{ trip.name }}</h1>
-<p>Ces choix sont <b>facultatifs</b> et ne concernent que vous : personne d’autre ne peut fixer votre poids ou votre plafond, et ils ne sont affichés qu’à vous. Si vous ne cochez rien, vous payez simplement votre part normale.</p>
+{% if passwordless %}
+<p class="notice"><b>Attention :</b> votre compte n’a pas de mot de passe. Toute personne qui connaît votre nom d’utilisateur peut se connecter à votre place et voir ces choix. <a href="{% url 'profile' %}">Définir un mot de passe</a></p>
+{% endif %}
+<p>Ces choix sont <b>facultatifs</b> et ne concernent que vous : personne d’autre ne peut fixer votre poids ou votre plafond, et les autres membres ne les voient pas. Si vous ne cochez rien, vous payez simplement votre part normale.</p>
 <form method="post">{% csrf_token %}
   {{ form.non_field_errors }}
 

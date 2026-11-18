@@ -415,7 +415,10 @@ def solidarity(request, pk):
                     SolidarityPref.objects.filter(member=me, category=code).delete()
         messages.success(request, "Vos choix sont enregistrés. Ils ne sont visibles que par vous.")
         return redirect("budget", pk=trip.pk)
-    return render(request, "trips/solidarity.html", {"form": form, "trip": trip})
+    return render(request, "trips/solidarity.html", {
+        "form": form, "trip": trip,
+        "passwordless": request.user.check_password(""),
+    })
 
 @login_required
 def search(request, pk, dest_pk):

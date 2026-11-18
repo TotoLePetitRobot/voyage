@@ -48,9 +48,9 @@ class SettlementTests(SimpleTestCase):
 class BudgetViewTests(TestCase):
     def setUp(self):
         U = get_user_model()
-        self.a = U.objects.create_user("a@example.com", "pw-test-123")
-        self.b = U.objects.create_user("b@example.com", "pw-test-123")
-        self.c = U.objects.create_user("c@example.com", "pw-test-123")
+        self.a = U.objects.create_user("a", password="pw-test-123")
+        self.b = U.objects.create_user("b", password="pw-test-123")
+        self.c = U.objects.create_user("c", password="pw-test-123")
         self.trip = Trip.objects.create(name="Test")
         self.ma = Member.objects.create(trip=self.trip, user=self.a, is_organizer=True)
         self.mb = Member.objects.create(trip=self.trip, user=self.b)
@@ -133,7 +133,7 @@ class EquityBalanceTests(TestCase):
         self.trip = Trip.objects.create(name="Test")
         self.m = []
         for i, name in enumerate("abc"):
-            user = U.objects.create_user(f"{name}@example.com", "pw-test-123")
+            user = U.objects.create_user(name, password="pw-test-123")
             self.m.append(Member.objects.create(trip=self.trip, user=user, is_organizer=(i == 0)))
 
     def expense(self, payer, amount, category, shares):
@@ -208,8 +208,8 @@ class LinksTests(SimpleTestCase):
 class SearchViewTests(TestCase):
     def setUp(self):
         U = get_user_model()
-        self.a = U.objects.create_user("a@example.com", "pw-test-123")
-        self.outsider = U.objects.create_user("z@example.com", "pw-test-123")
+        self.a = U.objects.create_user("a", password="pw-test-123")
+        self.outsider = U.objects.create_user("z", password="pw-test-123")
         self.trip = Trip.objects.create(name="Test")
         Member.objects.create(trip=self.trip, user=self.a, origin_city="Lyon")
         self.dest = Destination.objects.create(trip=self.trip, name="Chamonix", 

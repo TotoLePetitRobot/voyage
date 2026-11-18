@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Mon profil</h1>
+<p>Nom d’utilisateur : <b>{{ user.get_username }}</b></p>
+{% if not has_password %}
+<p class="notice"><b>Votre compte n’a pas de mot de passe.</b> Toute personne qui connaît votre nom d’utilisateur peut se connecter à votre place, voir vos choix privés (budget, plafond, poids de solidarité) et même s’approprier le compte. Les autres membres d’un voyage voient votre nom.</p>
+{% endif %}
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
+{% endblock %}

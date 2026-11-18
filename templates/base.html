@@ -12,7 +12,7 @@
   <a class="brand" href="{% url 'trip_list' %}">🧭 Voyages entre amis</a>
   <span class="spacer"></span>
   {% if user.is_authenticated %}
-    <span class="who">{{ user.email }}</span>
+    <a class="who" href="{% url 'profile' %}">{{ user.get_username }}</a>
     <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">Se déconnecter</button></form>
   {% else %}
     <a href="{% url 'login' %}">Se connecter</a>

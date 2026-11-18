@@ -45,7 +45,7 @@ class Member(models.Model):
 
     @property
     def label(self):
-        return self.display_name or self.user.email.split("@")[0]
+        return self.display_name or self.user.username
 
     def __str__(self):
         return f"{self.label} – {self.trip}"
