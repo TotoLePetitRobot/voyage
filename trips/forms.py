@@ -29,7 +29,7 @@ class DestinationForm(forms.ModelForm):
 
     class Meta:
         model = Destination
-        fields = ["name", "url", "notes"]
+        fields = ["name", "nearest_station", "url", "notes"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

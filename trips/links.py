@@ -1,4 +1,5 @@
 from urllib.parse import quote
+from .calendar_utils import MONTHS_FR
 
 # Gabarits modifiables : {dest}, {adults}, {checkin}, {checkout}, {origin}.
 LODGING_PROVIDERS = [
@@ -25,6 +26,8 @@ TRAIN_PROVIDERS = [
     },
 ]
 
+SNCF_CONNECT_URL = "https://www.sncf-connect.com/"
+
 
 def _q(value):
     return quote(str(value), safe="")
@@ -43,6 +46,16 @@ def lodging_links(destination, start, end, adults):
             for p in LODGING_PROVIDERS], dated
 
 
-def train_links(origin, destination):
-    values = {"origin": _q(origin), "dest": _q(destination)}
+def train_links(origin, destination, station=""):
+    target = station.strip() or destination
+    values = {"origin": _q(origin), "dest": _q(target)}
     return [{"name": p["name"], "url": p["url"].format(**values)} for p in TRAIN_PROVIDERS]
+
+
+def sncf_phrase(origin, destination, station="", day=None):
+    """Phrase à copier dans la recherche de SNCF Connect."""
+    target = station.strip() or destination
+    text = f"{origin} {target}"
+    if day:
+        text += f" le {day.day} {MONTHS_FR[day.month - 1]}"
+    return text

@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Importer des destinations</h1>
-<p>Fichier CSV avec une ligne d’en-tête. Colonnes reconnues : <code>nom</code> (obligatoire), <code>lien</code>, <code>notes</code>. Toute autre colonne devient une info spécifique.</p>
-<pre>nom;lien;notes;Forfait 6 jours;Location matériel
-La Plagne;https://www.la-plagne.com;Station reliée;320 €;95 €
-Lisbonne;;Escapade ville;;</pre>
+<p>Fichier CSV avec une ligne d’en-tête. Colonnes reconnues : <code>nom</code> (obligatoire), <code>gare</code>, <code>lien</code>, <code>notes</code>. Toute autre colonne devient une info spécifique.</p>
+<pre>nom;gare;lien;notes;Forfait 6 jours;Location matériel
+La Plagne;Gare de Aime-la-Plagne;https://www.la-plagne.com;Station reliée;320 €;95 €
+Lisbonne;;;Escapade ville;;</pre>
 <p>Depuis Excel : « Enregistrer sous » puis « CSV UTF-8 ». Les noms déjà présents sont ignorés.</p>
 <form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button>Importer</button></form>
 <p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>

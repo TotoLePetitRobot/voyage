@@ -5,6 +5,7 @@ from django.core.validators import URLValidator
 NAME_KEYS = {"nom", "name", "destination"}
 URL_KEYS = {"lien", "url"}
 NOTE_KEYS = {"notes", "note"}
+STATION_KEYS = {"gare", "station", "gare la plus proche"}
 MAX_ROWS = 200
 _url_validator = URLValidator(schemes=["http", "https"])
 
@@ -38,7 +39,7 @@ def parse_destinations(text):
             continue
         if len(rows) >= MAX_ROWS:
             raise ValueError(f"Maximum {MAX_ROWS} destinations par fichier.")
-        url, notes, extra = "", "", {}
+        url, notes, station, extra = "", "", "", {}
         for h in headers:
             if h == name_col:
                 continue
@@ -50,7 +51,9 @@ def parse_destinations(text):
                 url = _clean_url(value)
             elif col in NOTE_KEYS:
                 notes = value
+            elif col in STATION_KEYS:
+                station = value[:120]
             else:
                 extra[h.strip()] = value
-        rows.append({"name": name, "url": url, "notes": notes, "extra": extra})
+        rows.append({"name": name, "url": url, "notes": notes, "station": station, "extra": extra})
     return rows

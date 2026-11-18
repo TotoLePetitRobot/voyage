@@ -17,7 +17,7 @@ from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
                     MemberForm, SolidarityForm, TripForm)
 from .importers import parse_destinations
-from .links import lodging_links, train_links
+from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Member, SolidarityPref, Trip)
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
@@ -130,7 +130,8 @@ def destination_import(request, pk):
                     continue
                 existing.add(key)
                 new.append(Destination(trip=trip, proposed_by=me, name=r["name"],
-                                       url=r["url"], notes=r["notes"], extra_info=r["extra"]))
+                                       nearest_station=r["station"], url=r["url"],
+                                       notes=r["notes"], extra_info=r["extra"]))
             Destination.objects.bulk_create(new)
             messages.success(
                 request,
@@ -443,10 +444,14 @@ def search(request, pk, dest_pk):
         if city:
             entry = origins.setdefault(city.casefold(), {"origin": city, "count": 0})
             entry["count"] += 1
-    trains = [{**o, "links": train_links(o["origin"], dest.name)}
+    day = chosen.start_date if chosen else None
+    trains = [{**o,
+               "links": train_links(o["origin"], dest.name, dest.nearest_station),
+               "sncf_phrase": sncf_phrase(o["origin"], dest.name, dest.nearest_station, day)}
               for o in sorted(origins.values(), key=lambda o: o["origin"].casefold())]
 
     return render(request, "trips/search.html", {
         "trip": trip, "dest": dest, "options": options, "chosen": chosen,
         "lodging": lodging, "dated": dated, "adults": len(members), "trains": trains,
+        "sncf_url": SNCF_CONNECT_URL, "target": dest.nearest_station or dest.name,
     })

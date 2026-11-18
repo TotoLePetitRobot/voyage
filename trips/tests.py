@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
-from .links import lodging_links, train_links
+from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Member, 
                      SolidarityPref, Trip)
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
@@ -192,6 +192,14 @@ class LinksTests(SimpleTestCase):
         self.assertIn("origin=Saint-%C3%89tienne", url)
         self.assertIn("travelmode=transit", url)
 
+    def test_station_replaces_destination_in_train_link(self):
+        url = train_links("Lyon", "Chamonix", "Gare de Chamonix-Mont-Blanc")[0]["url"]
+        self.assertIn("destination=Gare%20de%20Chamonix-Mont-Blanc", url)
+
+    def test_sncf_phrase(self):
+        self.assertEqual(sncf_phrase("Lyon", "Chamonix", "Gare de Chamonix", date(2027, 2, 6)),
+                         "Lyon Gare de Chamonix le 6 février")
+        self.assertEqual(sncf_phrase("Lyon", "Chamonix"), "Lyon Chamonix")
 
 class SearchViewTests(TestCase):
     def setUp(self):
@@ -200,7 +208,8 @@ class SearchViewTests(TestCase):
         self.outsider = U.objects.create_user("z@example.com", "pw-test-123")
         self.trip = Trip.objects.create(name="Test")
         Member.objects.create(trip=self.trip, user=self.a, origin_city="Lyon")
-        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix")
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix", 
+                                               nearest_station="Chamonix-Mont-Blanc")
         DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
                                   end_date=date(2027, 2, 13))
         self.url = reverse("search", args=[self.trip.pk, self.dest.pk])
@@ -215,3 +224,8 @@ class SearchViewTests(TestCase):
     def test_outsider_gets_404(self):
         self.client.force_login(self.outsider)
         self.assertEqual(self.client.get(self.url).status_code, 404)
+
+    def test_page_shows_sncf_phrase_with_station(self):
+        self.client.force_login(self.a)
+        r = self.client.get(self.url)
+        self.assertContains(r, "Lyon Chamonix-Mont-Blanc le 6 février")

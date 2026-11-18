@@ -53,6 +53,10 @@ class Member(models.Model):
 class Destination(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="destinations")
     name = models.CharField("Destination", max_length=120)
+    nearest_station = models.CharField(
+        "Gare la plus proche", max_length=120, blank=True,
+        help_text="Utilisée pour les recherches de trajets. Exemple : Gare de Chamonix-Mont-Blanc",
+    )
     url = models.URLField("Lien", blank=True)
     notes = models.TextField("Notes", blank=True)
     extra_info = models.JSONField(default=dict, blank=True)

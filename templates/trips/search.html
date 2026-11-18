@@ -23,18 +23,26 @@
   {% endfor %}
 </ul>
 
-<h2>Trajets en transports en commun</h2>
+<h2>Trajets vers {{ target }}</h2>
+{% if not dest.nearest_station %}
+  <p><small>Astuce : indiquez la gare la plus proche en <a href="{% url 'destination_edit' dest.pk %}">modifiant la destination</a>.</small></p>
+{% endif %}
 {% for t in trains %}
   <h3>Depuis {{ t.origin }} ({{ t.count }} personne{{ t.count|pluralize }})</h3>
   <ul>
     {% for l in t.links %}
       <li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a></li>
     {% endfor %}
+    <li><a href="{{ sncf_url }}" target="_blank" rel="noopener noreferrer">SNCF Connect</a>
+      – tapez ou collez dans sa recherche :
+      <input value="{{ t.sncf_phrase }}" readonly size="42" onclick="this.select()">
+      <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(this.previousElementSibling.value)">Copier</button>
+    </li>
   </ul>
 {% empty %}
   <p>Aucune ville de départ renseignée. Chacun peut l’indiquer sur « Ma fiche ».</p>
 {% endfor %}
-<p><small>Ces liens donnent les itinéraires et les durées, pas les prix des billets ni la date : choisissez le jour sur le site ouvert.</small></p>
+<p><small>Les liens Google Maps donnent les itinéraires et les durées, pas les prix des billets ni la date. Pour SNCF Connect, si la phrase est mal comprise, utilisez la recherche détaillée du site.</small></p>
 
 <p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
 {% endblock %}
