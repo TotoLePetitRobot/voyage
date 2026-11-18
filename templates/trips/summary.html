@@ -4,7 +4,7 @@
 <p><small>Score : Oui = 2 points, Peut-être = 1, Non = 0.</small></p>
 
 <h2>Destinations</h2>
-<table border="1" cellpadding="4">
+<table>
   <tr><th>Destination</th><th>Oui</th><th>Peut-être</th><th>Non</th><th>Score</th></tr>
   {% for d in destinations %}
   <tr><td>{{ d.name }}</td><td>{{ d.yes }}</td><td>{{ d.maybe }}</td><td>{{ d.no }}</td><td><b>{{ d.total }}</b></td></tr>
@@ -13,7 +13,7 @@
 </table>
 
 <h2>Périodes</h2>
-<table border="1" cellpadding="4">
+<table>
   <tr><th>Période</th><th>Oui</th><th>Peut-être</th><th>Non</th><th>Score</th></tr>
   {% for o in dates %}
   <tr><td>{{ o.start_date|date:"j F Y" }} → {{ o.end_date|date:"j F Y" }} ({{ o.nights }} nuit{{ o.nights|pluralize }})</td>

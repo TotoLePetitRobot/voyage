@@ -1,22 +1,39 @@
-<!doctype html>
+{% load static %}<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Voyages entre amis{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
+  <link rel="stylesheet" href="{% static 'css/site.css' %}">
 </head>
 <body>
-<nav>
-  <a href="{% url 'trip_list' %}">Mes voyages</a>
+<header class="topbar"><div class="in">
+  <a class="brand" href="{% url 'trip_list' %}">🧭 Voyages entre amis</a>
+  <span class="spacer"></span>
   {% if user.is_authenticated %}
-    {{ user.email }}
-    <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}<button>Se déconnecter</button></form>
+    <span class="who">{{ user.email }}</span>
+    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">Se déconnecter</button></form>
   {% else %}
     <a href="{% url 'login' %}">Se connecter</a>
   {% endif %}
-</nav>
-<hr>
-{% if messages %}<ul>{% for m in messages %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
-{% block content %}{% endblock %}
+</div></header>
+
+{% if trip.pk %}
+{% with n=request.resolver_match.url_name %}
+<nav class="tabs" aria-label="Sections du voyage"><div class="in">
+  <a href="{% url 'trip_detail' trip.pk %}"{% if n == 'trip_detail' or n == 'search' or n == 'destination_add' or n == 'destination_edit' or n == 'destination_import' %} aria-current="page"{% endif %}>Voyage</a>
+  <a href="{% url 'date_list' trip.pk %}"{% if n == 'date_list' %} aria-current="page"{% endif %}>Dates</a>
+  <a href="{% url 'votes' trip.pk %}"{% if n == 'votes' %} aria-current="page"{% endif %}>Votes</a>
+  <a href="{% url 'trip_summary' trip.pk %}"{% if n == 'trip_summary' %} aria-current="page"{% endif %}>Synthèse</a>
+  <a href="{% url 'budget' trip.pk %}"{% if n == 'budget' or n == 'expense_add' or n == 'expense_edit' or n == 'solidarity' %} aria-current="page"{% endif %}>Budget</a>
+</div></nav>
+{% endwith %}
+{% endif %}
+
+<main class="wrap">
+  {% if messages %}<ul class="messages">{% for m in messages %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+  {% block content %}{% endblock %}
+</main>
 </body>
 </html>

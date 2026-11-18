@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>{{ trip.name }}</h1>
-<p><a href="{% url 'date_list' trip.pk %}">Périodes et calendrier</a> · <a href="{% url 'votes' trip.pk %}">Voter</a> · <a href="{% url 'trip_summary' trip.pk %}">Synthèse du groupe</a></p>
 
 <h2>Participants</h2>
 <ul>
@@ -21,7 +20,7 @@
   <a href="{% url 'budget' trip.pk %}">Budget partagé</a>
 </p>
 {% for d in destinations %}
-  <div>
+  <div class="card">
     <h3>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</h3>
     {% if d.nearest_station %}<small>Gare la plus proche : {{ d.nearest_station }}</small>{% endif %}
     {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}

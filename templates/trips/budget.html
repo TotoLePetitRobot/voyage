@@ -42,7 +42,7 @@
 
 <h2>Dépenses</h2>
 {% for e in expenses %}
-  <div>
+  <div class="card">
     {% if e.is_transfer %}
       <b>Remboursement</b> : {{ e.paid_by.label }} →
       {% for s in e.shares.all %}{{ s.member.label }}{% endfor %}
