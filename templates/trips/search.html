@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ dest.name }} : logements et trajets</h1>
+<p>Ces liens ouvrent des sites externes avec votre recherche pré-remplie. Les prix et les disponibilités sont ceux de ces sites, pas de cette application.</p>
+
+<h2>Période</h2>
+{% if options %}
+  <ul>
+  {% for o in options %}
+    <li>{% if o.pk == chosen.pk %}<b>{% endif %}<a href="?p={{ o.pk }}">du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}</a>{% if o.pk == chosen.pk %}</b> (utilisée){% endif %}
+      <small>({{ o.nights }} nuit{{ o.nights|pluralize }}, score {{ o.total }})</small></li>
+  {% endfor %}
+  </ul>
+{% else %}
+  <p>Aucune période proposée : les liens de logement n’ont pas de dates. <a href="{% url 'date_list' trip.pk %}">Proposer une période</a></p>
+{% endif %}
+
+<h2>Logements pour {{ adults }} personne{{ adults|pluralize }}</h2>
+{% if not dated %}<p><small>Sans période d’au moins une nuit, les recherches sont ouvertes sans dates.</small></p>{% endif %}
+<ul>
+  {% for l in lodging %}
+    <li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a></li>
+  {% endfor %}
+</ul>
+
+<h2>Trajets en transports en commun</h2>
+{% for t in trains %}
+  <h3>Depuis {{ t.origin }} ({{ t.count }} personne{{ t.count|pluralize }})</h3>
+  <ul>
+    {% for l in t.links %}
+      <li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a></li>
+    {% endfor %}
+  </ul>
+{% empty %}
+  <p>Aucune ville de départ renseignée. Chacun peut l’indiquer sur « Ma fiche ».</p>
+{% endfor %}
+<p><small>Ces liens donnent les itinéraires et les durées, pas les prix des billets ni la date : choisissez le jour sur le site ouvert.</small></p>
+
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}

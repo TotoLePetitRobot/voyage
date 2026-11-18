@@ -28,6 +28,7 @@
     {% if d.extra_info %}
       <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
     {% endif %}
+    <a href="{% url 'search' trip.pk d.pk %}">Logements et trajets</a> ·
     <a href="{% url 'destination_edit' d.pk %}">Modifier</a>
     {% if me.is_organizer or d.proposed_by_id == me.id %}
       <form method="post" action="{% url 'destination_delete' d.pk %}" style="display:inline"

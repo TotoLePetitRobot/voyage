@@ -17,6 +17,7 @@ from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
                     MemberForm, SolidarityForm, TripForm)
 from .importers import parse_destinations
+from .links import lodging_links, train_links
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Member, SolidarityPref, Trip)
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
@@ -414,3 +415,38 @@ def solidarity(request, pk):
         messages.success(request, "Vos choix sont enregistrés. Ils ne sont visibles que par vous.")
         return redirect("budget", pk=trip.pk)
     return render(request, "trips/solidarity.html", {"form": form, "trip": trip})
+
+@login_required
+def search(request, pk, dest_pk):
+    trip, me = get_trip_and_member(request, pk)
+    dest = get_object_or_404(Destination, pk=dest_pk, trip=trip)
+
+    options = list(with_scores(trip.date_options.all()).order_by("-total", "-yes", "start_date"))
+    chosen = None
+    raw = request.GET.get("p", "")
+    if raw.isdigit():
+        chosen = next((o for o in options if o.pk == int(raw)), None)
+    if chosen is None and options:
+        chosen = options[0]
+
+    members = list(trip.members.all())
+    lodging, dated = lodging_links(
+        dest.name,
+        chosen.start_date if chosen else None,
+        chosen.end_date if chosen else None,
+        len(members),
+    )
+
+    origins = {}
+    for m in members:
+        city = m.origin_city.strip()
+        if city:
+            entry = origins.setdefault(city.casefold(), {"origin": city, "count": 0})
+            entry["count"] += 1
+    trains = [{**o, "links": train_links(o["origin"], dest.name)}
+              for o in sorted(origins.values(), key=lambda o: o["origin"].casefold())]
+
+    return render(request, "trips/search.html", {
+        "trip": trip, "dest": dest, "options": options, "chosen": chosen,
+        "lodging": lodging, "dated": dated, "adults": len(members), "trains": trains,
+    })

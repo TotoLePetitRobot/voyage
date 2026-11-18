@@ -1,11 +1,14 @@
 import random
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
-from .models import Expense, ExpenseShare, Member, SolidarityPref, Trip
+from .links import lodging_links, train_links
+from .models import (DateOption, Destination, Expense, ExpenseShare, Member, 
+                     SolidarityPref, Trip)
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .views import trip_balances
 
@@ -160,3 +163,55 @@ class EquityBalanceTests(TestCase):
         a.extra_max = Decimal("100"); a.save()
         _, balances, _ = trip_balances(self.trip)
         self.assertEqual(balances, {a.pk: 14000, b.pk: -10000, c.pk: -4000})
+
+class LinksTests(SimpleTestCase):
+    def test_booking_link_with_dates(self):
+        links, dated = lodging_links("La Plagne", date(2027, 2, 6), date(2027, 2, 13), 4)
+        self.assertTrue(dated)
+        url = links[0]["url"]
+        for part in ("ss=La%20Plagne", "checkin=2027-02-06",
+                     "checkout=2027-02-13", "group_adults=4"):
+            self.assertIn(part, url)
+
+    def test_special_characters_are_encoded(self):
+        links, _ = lodging_links("Rock & Roll/Bar?x=1", None, None, 2)
+        for link in links:
+            self.assertIn("Rock%20%26%20Roll%2FBar%3Fx%3D1", link["url"])
+
+    def test_zero_night_period_gives_undated_links(self):
+        links, dated = lodging_links("Lisbonne", date(2027, 3, 1), date(2027, 3, 1), 2)
+        self.assertFalse(dated)
+        self.assertNotIn("checkin", links[0]["url"])
+
+    def test_adults_are_clamped(self):
+        self.assertIn("group_adults=1", lodging_links("X", None, None, 0)[0][0]["url"])
+        self.assertIn("group_adults=30", lodging_links("X", None, None, 99)[0][0]["url"])
+
+    def test_train_link(self):
+        url = train_links("Saint-Étienne", "Chamonix")[0]["url"]
+        self.assertIn("origin=Saint-%C3%89tienne", url)
+        self.assertIn("travelmode=transit", url)
+
+
+class SearchViewTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.a = U.objects.create_user("a@example.com", "pw-test-123")
+        self.outsider = U.objects.create_user("z@example.com", "pw-test-123")
+        self.trip = Trip.objects.create(name="Test")
+        Member.objects.create(trip=self.trip, user=self.a, origin_city="Lyon")
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix")
+        DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                  end_date=date(2027, 2, 13))
+        self.url = reverse("search", args=[self.trip.pk, self.dest.pk])
+
+    def test_member_sees_prefilled_links(self):
+        self.client.force_login(self.a)
+        r = self.client.get(self.url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "checkin=2027-02-06")
+        self.assertContains(r, "origin=Lyon")
+
+    def test_outsider_gets_404(self):
+        self.client.force_login(self.outsider)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
