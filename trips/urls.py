@@ -27,4 +27,12 @@ urlpatterns = [
     path("voyages/<int:pk>/repas/courses/", views.meal_shopping, name="meal_shopping"),
     path("repas/<int:meal_pk>/modifier/", views.meal_edit, name="meal_edit"),
     path("repas/<int:meal_pk>/supprimer/", views.meal_delete, name="meal_delete"),
+    path("voyages/<int:pk>/roles/", views.roles, name="roles"),
+    path("voyages/<int:pk>/trajets/", views.legs, name="legs"),
+    path("voyages/<int:pk>/trajets/nouveau/", views.leg_add, name="leg_add"),
+    path("trajets/<int:leg_pk>/modifier/", views.leg_edit, name="leg_edit"),
+    path("trajets/<int:leg_pk>/supprimer/", views.leg_delete, name="leg_delete"),
+    path("trajets/<int:leg_pk>/s-ajouter/", views.leg_join, name="leg_join"),
+    path("trajets/<int:leg_pk>/quitter/", views.leg_leave, name="leg_leave"),
+    path("trajets/<int:leg_pk>/retirer/", views.leg_remove, name="leg_remove"),
 ]

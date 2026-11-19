@@ -9,7 +9,7 @@
 {% for letter, o in legend %}
   <li><b>{{ letter }}</b> : du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}
     ({{ o.nights }} nuit{{ o.nights|pluralize }}){% if o.proposed_by %} – proposée par {{ o.proposed_by.label }}{% endif %}
-    {% if me.is_organizer or o.proposed_by_id == me.id %}
+    {% if me.can_manage or o.proposed_by_id == me.id %}
       <form method="post" action="{% url 'date_delete' o.pk %}" style="display:inline"
             onsubmit="return confirm('Supprimer cette période ?')">{% csrf_token %}<button>Supprimer</button></form>
     {% endif %}

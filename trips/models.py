@@ -7,6 +7,11 @@ from django.utils import timezone
 
 from .shopping import format_line
 
+ROLE_COORGANIZER = "coorganizer"
+ROLE_CHEF = "chef"
+ROLE_CHOICES = [(ROLE_COORGANIZER, "Co-organisateur"), (ROLE_CHEF, "Chef cuistot")]
+ROLE_LABELS = dict(ROLE_CHOICES)
+
 def make_token():
     return secrets.token_urlsafe(16)
 
@@ -39,6 +44,7 @@ class Member(models.Model):
                                   validators=[MinValueValidator(0)])
     extra_max = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True,
                                     validators=[MinValueValidator(0)])
+    roles = models.JSONField(default=list, blank=True)
     is_organizer = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
 
@@ -50,6 +56,30 @@ class Member(models.Model):
     @property
     def label(self):
         return self.display_name.strip() or "Nouveau membre"
+
+    @property
+    def can_manage(self):
+        return self.is_organizer or ROLE_COORGANIZER in self.roles
+
+    @property
+    def is_chef(self):
+        return ROLE_CHEF in self.roles
+
+    @property
+    def role_labels(self):
+        labels = ["Organisateur"] if self.is_organizer else []
+        return labels + [ROLE_LABELS[r] for r in self.roles if r in ROLE_LABELS]
+
+    def can_edit_meal(self, meal):
+        return self.can_manage or self.is_chef or meal.proposed_by_id == self.pk
+
+    def assignable_roles(self):
+        everything = {code for code, _ in ROLE_CHOICES}
+        if self.is_organizer:
+            return everything
+        if ROLE_COORGANIZER in self.roles:
+            return everything - {ROLE_COORGANIZER}
+        return set()
 
     def __str__(self):
         return f"{self.label} – {self.trip}"
@@ -224,3 +254,50 @@ class MealItem(models.Model):
     @property
     def display(self):
         return format_line(self.name, self.quantity, self.unit)
+
+TRANSPORT_CHOICES = [("train", "Train"), ("car", "Voiture"), ("shuttle", "Navette ou bus"),
+                     ("plane", "Avion"), ("other", "Autre")]
+LEG_STATUS_CHOICES = [("planned", "Prévu"), ("confirmed", "Confirmé")]
+DIRECTION_CHOICES = [("out", "Aller"), ("back", "Retour")]
+
+
+class Leg(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="legs")
+    direction = models.CharField("Sens", max_length=4, choices=DIRECTION_CHOICES, default="out")
+    position = models.PositiveSmallIntegerField(
+        "Étape n°", default=1, validators=[MinValueValidator(1), MaxValueValidator(20)])
+    name = models.CharField("Nom", max_length=120, help_text="Exemple : Train Paris–Grenoble")
+    transport = models.CharField("Type de transport", max_length=8,
+                                 choices=TRANSPORT_CHOICES, default="train")
+    departure_place = models.CharField("Lieu de départ", max_length=120)
+    departure_at = models.DateTimeField("Heure de départ", null=True, blank=True)
+    arrival_place = models.CharField("Lieu d’arrivée", max_length=120)
+    arrival_at = models.DateTimeField("Heure d’arrivée", null=True, blank=True)
+    price = models.DecimalField("Prix par personne (€, facultatif)", max_digits=8,
+                                decimal_places=2, null=True, blank=True,
+                                validators=[MinValueValidator(0)])
+    status = models.CharField("Statut", max_length=9, choices=LEG_STATUS_CHOICES,
+                              default="planned")
+    seats = models.PositiveSmallIntegerField(
+        "Places disponibles (voiture)", null=True, blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(20)])
+    proposed_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="proposed_legs")
+    passengers = models.ManyToManyField(Member, blank=True, related_name="rides")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["position", "departure_at", "id"]
+
+    @property
+    def is_car(self):
+        return self.transport == "car"
+
+    @property
+    def seats_left(self):
+        if not self.is_car or self.seats is None:
+            return None
+        return max(self.seats - len(self.passengers.all()), 0)
+
+    def __str__(self):
+        return self.name

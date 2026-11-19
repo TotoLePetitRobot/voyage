@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Trajets – {{ trip.name }}</h1>
+<p>Décrivez l’aller et le retour étape par étape (par exemple un train, puis une navette).</p>
+
+{% for section in sections %}
+  <h2>{{ section.label }}</h2>
+  {% for leg in section.legs %}
+    <div class="card">
+      <h3>Étape {{ leg.position }} · {{ leg.name }}
+        <span class="badge{% if leg.status == 'confirmed' %} ok{% endif %}">{{ leg.get_status_display }}</span></h3>
+      <p>{{ leg.get_transport_display }} :
+        {{ leg.departure_place }}{% if leg.departure_at %} ({{ leg.departure_at|date:"j F Y, H:i" }}){% endif %}
+        → {{ leg.arrival_place }}{% if leg.arrival_at %} ({{ leg.arrival_at|date:"j F Y, H:i" }}){% endif %}</p>
+      {% if leg.warning %}<p class="warn">Attention : cette étape part avant l’arrivée de l’étape précédente.</p>{% endif %}
+      {% if leg.price is not None %}<p>Prix : {{ leg.price|floatformat:2 }} € par personne</p>{% endif %}
+      {% if leg.proposed_by %}<small>{% if leg.is_car %}Conducteur{% else %}Proposé par{% endif %} : {{ leg.proposed_by.label }}</small>{% endif %}
+
+      {% if leg.is_car %}
+        <p>Places : {{ leg.seats_left }} libre{{ leg.seats_left|pluralize }} sur {{ leg.seats }}</p>
+        {% if leg.passengers.all %}
+          <ul>
+          {% for p in leg.passengers.all %}
+            <li>{{ p.label }}
+              {% if leg.can_edit %}
+                <form method="post" action="{% url 'leg_remove' leg.pk %}" style="display:inline">{% csrf_token %}
+                  <input type="hidden" name="member_id" value="{{ p.pk }}"><button>Retirer</button></form>
+              {% endif %}
+            </li>
+          {% endfor %}
+          </ul>
+        {% endif %}
+        {% if leg.can_join %}
+          <form method="post" action="{% url 'leg_join' leg.pk %}">{% csrf_token %}<button>Je m’ajoute comme passager</button></form>
+        {% elif leg.is_passenger %}
+          <form method="post" action="{% url 'leg_leave' leg.pk %}">{% csrf_token %}<button>Me retirer</button></form>
+        {% elif leg.seats_left == 0 %}
+          <small>Voiture complète.</small>
+        {% endif %}
+      {% endif %}
+
+      {% if leg.can_edit %}
+        <p><a href="{% url 'leg_edit' leg.pk %}">Modifier</a>
+        <form method="post" action="{% url 'leg_delete' leg.pk %}" style="display:inline"
+              onsubmit="return confirm('Supprimer cette étape ?')">{% csrf_token %}<button>Supprimer</button></form></p>
+      {% endif %}
+    </div>
+  {% empty %}
+    <p>Aucune étape pour l’instant.</p>
+  {% endfor %}
+  {% if section.total is not None %}
+    <p><b>Prix connu : {{ section.total|floatformat:2 }} € par personne</b> <small>(les étapes sans prix ne sont pas comptées)</small></p>
+  {% endif %}
+  <p><a href="{% url 'leg_add' trip.pk %}?sens={{ section.code }}">Ajouter une étape ({{ section.label|lower }})</a></p>
+{% endfor %}
+{% endblock %}

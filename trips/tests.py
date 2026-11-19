@@ -8,12 +8,13 @@ from pathlib import Path
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils import timezone as djtz
 
 from .backup import backup_sqlite
 from .importers import parse_destinations
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
-                     MealItem, Member, SolidarityPref, Trip)
+                     MealItem, Member, SolidarityPref, Trip, Leg)
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .shopping import aggregate, format_line, parse_line
 from .views import trip_balances
@@ -466,3 +467,240 @@ class MealViewTests(TestCase):
         self.assertEqual(self.client.get(reverse("meals", args=[self.trip.pk])).status_code, 404)
         self.assertEqual(
             self.client.get(reverse("meal_shopping", args=[self.trip.pk])).status_code, 404)
+
+class RoleTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.users = {n: U.objects.create_user(n, password="pw-test-123")
+                      for n in ("orga", "coorga", "chef", "simple", "stranger")}
+        self.trip = Trip.objects.create(name="Test")
+
+        def make(name, **kw):
+            return Member.objects.create(trip=self.trip, display_name=name.title(),
+                                         user=self.users[name], **kw)
+
+        self.orga = make("orga", is_organizer=True)
+        self.coorga = make("coorga", roles=["coorganizer"])
+        self.chef = make("chef", roles=["chef"])
+        self.simple = make("simple")
+        self.url = reverse("roles", args=[self.trip.pk])
+
+    def post_roles(self, as_user, member, roles):
+        self.client.force_login(self.users[as_user])
+        return self.client.post(self.url, {f"roles_{member.pk}": roles})
+
+    def test_capabilities(self):
+        by_simple = Meal(proposed_by_id=self.simple.pk)
+        by_orga = Meal(proposed_by_id=self.orga.pk)
+        self.assertTrue(self.orga.can_manage and self.coorga.can_manage)
+        self.assertFalse(self.chef.can_manage or self.simple.can_manage)
+        self.assertTrue(self.chef.can_edit_meal(by_orga))
+        self.assertTrue(self.coorga.can_edit_meal(by_orga))
+        self.assertTrue(self.simple.can_edit_meal(by_simple))
+        self.assertFalse(self.simple.can_edit_meal(by_orga))
+
+    def test_assignable_roles(self):
+        self.assertEqual(self.orga.assignable_roles(), {"coorganizer", "chef"})
+        self.assertEqual(self.coorga.assignable_roles(), {"chef"})
+        self.assertEqual(self.chef.assignable_roles(), set())
+        self.assertEqual(self.simple.assignable_roles(), set())
+
+    def test_organizer_can_assign_both_roles(self):
+        self.post_roles("orga", self.simple, ["coorganizer", "chef"])
+        self.simple.refresh_from_db()
+        self.assertEqual(sorted(self.simple.roles), ["chef", "coorganizer"])
+
+    def test_coorganizer_can_assign_chef_but_not_coorganizer(self):
+        self.post_roles("coorga", self.simple, ["coorganizer", "chef"])
+        self.simple.refresh_from_db()
+        self.assertEqual(self.simple.roles, ["chef"])
+
+    def test_coorganizer_cannot_remove_coorganizer_role_but_can_remove_chef(self):
+        self.client.force_login(self.users["coorga"])
+        self.client.post(self.url, {})
+        self.coorga.refresh_from_db()
+        self.chef.refresh_from_db()
+        self.assertEqual(self.coorga.roles, ["coorganizer"])
+        self.assertEqual(self.chef.roles, [])
+
+    def test_organizer_role_cannot_be_changed(self):
+        self.post_roles("orga", self.orga, ["chef"])
+        self.orga.refresh_from_db()
+        self.assertEqual(self.orga.roles, [])
+
+    def test_chef_and_simple_member_cannot_open_roles_page(self):
+        for name in ("chef", "simple"):
+            self.client.force_login(self.users[name])
+            self.assertEqual(self.client.get(self.url).status_code, 403)
+            self.assertEqual(self.client.post(self.url, {}).status_code, 403)
+
+    def test_stranger_gets_404(self):
+        self.client.force_login(self.users["stranger"])
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+    def test_chef_can_edit_and_delete_any_meal_but_simple_member_cannot(self):
+        meal = Meal.objects.create(trip=self.trip, title="Raclette", day=1,
+                                   proposed_by=self.orga)
+        edit = reverse("meal_edit", args=[meal.pk])
+        self.client.force_login(self.users["simple"])
+        self.assertEqual(self.client.get(edit).status_code, 403)
+        self.client.force_login(self.users["chef"])
+        self.assertEqual(self.client.get(edit).status_code, 200)
+        self.client.post(reverse("meal_delete", args=[meal.pk]))
+        self.assertFalse(Meal.objects.filter(pk=meal.pk).exists())
+
+    def test_coorganizer_has_organizer_powers_but_chef_does_not(self):
+        def make_expense():
+            return Expense.objects.create(trip=self.trip, paid_by=self.simple,
+                                          created_by=self.simple, label="x",
+                                          amount=Decimal("10"), split_mode="custom")
+        expense = make_expense()
+        self.client.force_login(self.users["chef"])
+        self.assertEqual(self.client.post(reverse("expense_delete", args=[expense.pk])).status_code, 403)
+        self.client.force_login(self.users["coorga"])
+        self.client.post(reverse("expense_delete", args=[expense.pk]))
+        self.assertFalse(Expense.objects.filter(pk=expense.pk).exists())
+
+
+class LegTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "dora", "alice", "bob", "carl", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        self.m = {}
+        for n in names[:-1]:
+            self.m[n] = Member.objects.create(trip=self.trip, display_name=n.title(),
+                                              user=self.users[n], is_organizer=(n == "orga"))
+
+    def leg(self, **kw):
+        data = dict(trip=self.trip, name="Train Paris–Grenoble", transport="train",
+                    departure_place="Paris", arrival_place="Grenoble", direction="out",
+                    position=1, proposed_by=self.m["dora"])
+        data.update(kw)
+        return Leg.objects.create(**data)
+
+    def car(self, seats=2):
+        return self.leg(name="Voiture", transport="car", seats=seats)
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def payload(self, **kw):
+        data = {"direction": "out", "position": 1, "name": "Train", "transport": "train",
+                "departure_place": "Paris", "arrival_place": "Grenoble",
+                "status": "planned"}
+        data.update(kw)
+        return data
+
+    def test_add_two_legs_in_order(self):
+        self.as_user("dora")
+        url = reverse("leg_add", args=[self.trip.pk])
+        self.client.post(url, self.payload(name="Navette Grenoble–Chamrousse", position=2))
+        self.client.post(url, self.payload(name="Train Paris–Grenoble", position=1))
+        page = self.client.get(reverse("legs", args=[self.trip.pk])).content.decode()
+        self.assertLess(page.index("Train Paris–Grenoble"),
+                        page.index("Navette Grenoble–Chamrousse"))
+
+    def test_car_requires_seats(self):
+        self.as_user("dora")
+        r = self.client.post(reverse("leg_add", args=[self.trip.pk]),
+                             self.payload(transport="car"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Leg.objects.count(), 0)
+
+    def test_non_car_ignores_seats(self):
+        self.as_user("dora")
+        self.client.post(reverse("leg_add", args=[self.trip.pk]), self.payload(seats=3))
+        self.assertIsNone(Leg.objects.get().seats)
+
+    def test_arrival_before_departure_is_rejected(self):
+        self.as_user("dora")
+        r = self.client.post(reverse("leg_add", args=[self.trip.pk]), self.payload(
+            departure_at="2027-02-06T10:00", arrival_at="2027-02-06T08:00"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Leg.objects.count(), 0)
+
+    def test_join_respects_capacity(self):
+        leg = self.car(seats=2)
+        for name in ("alice", "bob", "carl"):
+            self.as_user(name)
+            self.client.post(reverse("leg_join", args=[leg.pk]))
+        self.assertEqual(leg.passengers.count(), 2)
+        self.assertFalse(leg.passengers.filter(pk=self.m["carl"].pk).exists())
+
+    def test_driver_cannot_join_own_car(self):
+        leg = self.car()
+        self.as_user("dora")
+        self.client.post(reverse("leg_join", args=[leg.pk]))
+        self.assertEqual(leg.passengers.count(), 0)
+
+    def test_cannot_join_a_non_car_leg(self):
+        leg = self.leg()
+        self.as_user("alice")
+        self.client.post(reverse("leg_join", args=[leg.pk]))
+        self.assertEqual(leg.passengers.count(), 0)
+
+    def test_leave(self):
+        leg = self.car()
+        leg.passengers.add(self.m["alice"])
+        self.as_user("alice")
+        self.client.post(reverse("leg_leave", args=[leg.pk]))
+        self.assertEqual(leg.passengers.count(), 0)
+
+    def test_remove_passenger_permissions(self):
+        leg = self.car(seats=3)
+        leg.passengers.add(self.m["alice"], self.m["bob"], self.m["carl"])
+        url = reverse("leg_remove", args=[leg.pk])
+        self.as_user("bob")
+        self.assertEqual(self.client.post(url, {"member_id": self.m["alice"].pk}).status_code, 403)
+        self.as_user("dora")
+        self.client.post(url, {"member_id": self.m["alice"].pk})
+        self.as_user("orga")
+        self.client.post(url, {"member_id": self.m["bob"].pk})
+        self.assertEqual([p.pk for p in leg.passengers.all()], [self.m["carl"].pk])
+
+    def test_seats_cannot_drop_below_passengers(self):
+        leg = self.car(seats=2)
+        leg.passengers.add(self.m["alice"], self.m["bob"])
+        self.as_user("dora")
+        r = self.client.post(reverse("leg_edit", args=[leg.pk]), self.payload(
+            name="Voiture", transport="car", seats=1))
+        self.assertEqual(r.status_code, 200)
+        leg.refresh_from_db()
+        self.assertEqual(leg.seats, 2)
+
+    def test_cannot_switch_from_car_while_passengers_are_registered(self):
+        leg = self.car()
+        leg.passengers.add(self.m["alice"])
+        self.as_user("dora")
+        r = self.client.post(reverse("leg_edit", args=[leg.pk]), self.payload(name="Voiture"))
+        self.assertEqual(r.status_code, 200)
+        leg.refresh_from_db()
+        self.assertEqual(leg.transport, "car")
+
+    def test_only_proposer_or_manager_can_edit_and_delete(self):
+        leg = self.leg()
+        self.as_user("alice")
+        self.assertEqual(self.client.get(reverse("leg_edit", args=[leg.pk])).status_code, 403)
+        self.assertEqual(self.client.post(reverse("leg_delete", args=[leg.pk])).status_code, 403)
+        self.as_user("orga")
+        self.client.post(reverse("leg_delete", args=[leg.pk]))
+        self.assertEqual(Leg.objects.count(), 0)
+
+    def test_warning_and_price_total(self):
+        make = djtz.make_aware
+        self.leg(position=1, price=Decimal("45.50"),
+                 arrival_at=make(datetime(2027, 2, 6, 12, 0)))
+        self.leg(name="Navette", position=2, price=Decimal("10"),
+                 departure_at=make(datetime(2027, 2, 6, 11, 0)))
+        self.as_user("alice")
+        page = self.client.get(reverse("legs", args=[self.trip.pk]))
+        self.assertContains(page, "part avant l’arrivée")
+        self.assertContains(page, "55,50")
+
+    def test_outsider_gets_404(self):
+        leg = self.car()
+        self.as_user("stranger")
+        self.assertEqual(self.client.get(reverse("legs", args=[self.trip.pk])).status_code, 404)
+        self.assertEqual(self.client.post(reverse("leg_join", args=[leg.pk])).status_code, 404)

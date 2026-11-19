@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Rôles – {{ trip.name }}</h1>
+<ul>
+  <li><b>Co-organisateur</b> : mêmes pouvoirs que l’organisateur (modifier ou supprimer les éléments de n’importe qui, marquer des remboursements, gérer les rôles), sauf attribuer le rôle de co-organisateur.</li>
+  <li><b>Chef cuistot</b> : peut modifier ou supprimer n’importe quel repas.</li>
+</ul>
+<p><small>Les rôles sont visibles de tous les participants. Seul l’organisateur attribue le rôle de co-organisateur. Les cases grisées ne sont pas modifiables avec votre rôle.</small></p>
+
+<form method="post">{% csrf_token %}
+  <table>
+    <tr><th>Membre</th>{% for code, label in role_choices %}<th>{{ label }}</th>{% endfor %}</tr>
+    {% for row in rows %}
+    <tr>
+      <td>{{ row.member.label }}{% if row.member.is_organizer %} <small>(organisateur)</small>{% endif %}</td>
+      {% for box in row.boxes %}
+      <td>{% if row.member.is_organizer %}–{% else %}<input type="checkbox"
+          {% if box.editable %}name="roles_{{ row.member.pk }}" value="{{ box.code }}"{% else %}disabled{% endif %}
+          {% if box.checked %}checked{% endif %}
+          aria-label="{{ box.label }} : {{ row.member.label }}">{% endif %}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+  <button>Enregistrer</button>
+</form>
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}

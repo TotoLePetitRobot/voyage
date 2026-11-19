@@ -5,9 +5,10 @@
 <h2>Participants</h2>
 <ul>
   {% for m in members %}
-    <li>{{ m.label }}{% if m.origin_city %} – départ de {{ m.origin_city }}{% endif %}{% if m.is_organizer %} (organisateur){% endif %}</li>
+    <li>{{ m.label }}{% if m.origin_city %} – départ de {{ m.origin_city }}{% endif %}{% if m.role_labels %} ({{ m.role_labels|join:", " }}){% endif %}</li>
   {% endfor %}
 </ul>
+{% if me.can_manage %}<p><a href="{% url 'roles' trip.pk %}">Gérer les rôles</a></p>{% endif %}
 
 <h2>Inviter des amis</h2>
 <p>Envoyez-leur ce lien :
@@ -30,7 +31,7 @@
     {% endif %}
     <a href="{% url 'search' trip.pk d.pk %}">Logements et trajets</a> ·
     <a href="{% url 'destination_edit' d.pk %}">Modifier</a>
-    {% if me.is_organizer or d.proposed_by_id == me.id %}
+    {% if me.can_manage or d.proposed_by_id == me.id %}
       <form method="post" action="{% url 'destination_delete' d.pk %}" style="display:inline"
             onsubmit="return confirm('Supprimer cette destination ?')">{% csrf_token %}<button>Supprimer</button></form>
     {% endif %}

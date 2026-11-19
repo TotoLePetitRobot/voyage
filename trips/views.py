@@ -15,13 +15,14 @@ from django.views.decorators.http import require_POST
 
 from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
-                    MealForm, MemberForm, PseudoForm, SolidarityForm, TripForm)
+                    MealForm, MemberForm, PseudoForm, SolidarityForm, TripForm,
+                    LegForm)
 from .importers import parse_destinations
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
 from .middleware import PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
-                     Trip)
+                     Trip, Leg, DIRECTION_CHOICES, ROLE_CHOICES)
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
 from .shopping import aggregate
@@ -115,7 +116,7 @@ def destination_edit(request, dest_pk):
 def destination_delete(request, dest_pk):
     dest = get_object_or_404(Destination, pk=dest_pk, trip__members__user=request.user)
     me = dest.trip.members.get(user=request.user)
-    if not (me.is_organizer or dest.proposed_by_id == me.id):
+    if not (me.can_manage or dest.proposed_by_id == me.id):
         raise PermissionDenied
     trip_pk = dest.trip_id
     dest.delete()
@@ -187,7 +188,7 @@ def date_list(request, pk):
 def date_delete(request, opt_pk):
     opt = get_object_or_404(DateOption, pk=opt_pk, trip__members__user=request.user)
     me = opt.trip.members.get(user=request.user)
-    if not (me.is_organizer or opt.proposed_by_id == me.id):
+    if not (me.can_manage or opt.proposed_by_id == me.id):
         raise PermissionDenied
     trip_pk = opt.trip_id
     opt.delete()
@@ -306,13 +307,13 @@ def budget(request, pk):
     expenses = list(trip.expenses.select_related("paid_by__user")
                     .prefetch_related("shares__member__user"))
     for e in expenses:
-        e.can_edit = me.is_organizer or e.created_by_id == me.pk
+        e.can_edit = me.can_manage or e.created_by_id == me.pk
     rows = [{"label": m.label, "cents": balances[m.pk],
              "amount": Decimal(abs(balances[m.pk])) / 100} for m in members]
     transfer_rows = [{
         "payer": by_id[a].label, "payee": by_id[b].label,
         "payer_id": a, "payee_id": b, "cents": c, "amount": Decimal(c) / 100,
-        "can_mark": me.is_organizer or me.pk in (a, b),
+        "can_mark": me.can_manage or me.pk in (a, b),
     } for a, b, c in transfers]
     total = sum((e.amount for e in expenses if not e.is_transfer), Decimal("0"))
     return render(request, "trips/budget.html", {
@@ -359,7 +360,7 @@ def expense_edit(request, expense_pk):
     expense = get_object_or_404(Expense, pk=expense_pk, trip__members__user=request.user)
     trip = expense.trip
     me = trip.members.get(user=request.user)
-    if expense.is_transfer or not (me.is_organizer or expense.created_by_id == me.pk):
+    if expense.is_transfer or not (me.can_manage or expense.created_by_id == me.pk):
         raise PermissionDenied
     shares = {s.member_id: s.amount for s in expense.shares.all()}
     initial = {"label": expense.label, "amount": expense.amount, 
@@ -381,7 +382,7 @@ def expense_edit(request, expense_pk):
 def expense_delete(request, expense_pk):
     expense = get_object_or_404(Expense, pk=expense_pk, trip__members__user=request.user)
     me = expense.trip.members.get(user=request.user)
-    if not (me.is_organizer or expense.created_by_id == me.pk):
+    if not (me.can_manage or expense.created_by_id == me.pk):
         raise PermissionDenied
     trip_pk = expense.trip_id
     expense.delete()
@@ -401,7 +402,7 @@ def settle(request, pk):
     _, _, transfers = trip_balances(trip)
     if (payer_id, payee_id, cents) not in transfers:
         raise Http404
-    if not (me.is_organizer or me.pk in (payer_id, payee_id)):
+    if not (me.can_manage or me.pk in (payer_id, payee_id)):
         raise PermissionDenied
     with transaction.atomic():
         e = Expense.objects.create(
@@ -513,7 +514,7 @@ def meals(request, pk):
     trip, me = get_trip_and_member(request, pk)
     days = {}
     for meal in trip.meals.select_related("proposed_by").prefetch_related("items"):
-        meal.can_edit = me.is_organizer or meal.proposed_by_id == me.pk
+        meal.can_edit = me.can_edit_meal(meal)
         days.setdefault(meal.day, []).append(meal)
     return render(request, "trips/meals.html", {"trip": trip, "days": sorted(days.items())})
 
@@ -533,7 +534,7 @@ def meal_add(request, pk):
 def meal_edit(request, meal_pk):
     meal = get_object_or_404(Meal, pk=meal_pk, trip__members__user=request.user)
     trip, me = get_trip_and_member(request, meal.trip_id)
-    if not (me.is_organizer or meal.proposed_by_id == me.pk):
+    if not me.can_edit_meal(meal):
         raise PermissionDenied
     form = MealForm(request.POST or None, instance=meal)
     if request.method == "POST" and form.is_valid():
@@ -548,7 +549,7 @@ def meal_edit(request, meal_pk):
 def meal_delete(request, meal_pk):
     meal = get_object_or_404(Meal, pk=meal_pk, trip__members__user=request.user)
     trip, me = get_trip_and_member(request, meal.trip_id)
-    if not (me.is_organizer or meal.proposed_by_id == me.pk):
+    if not me.can_edit_meal(meal):
         raise PermissionDenied
     meal.delete()
     return redirect("meals", pk=trip.pk)
@@ -575,3 +576,153 @@ def meal_shopping(request, pk):
         "trip": trip, "selected": selected, "shopping": shopping,
         "text": "\n".join(f"- {s['line']}" for s in shopping),
     })
+
+@login_required
+def roles(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    assignable = me.assignable_roles()
+    members = list(trip.members.order_by("id"))
+    if request.method == "POST":
+        with transaction.atomic():
+            for m in members:
+                if m.is_organizer:
+                    continue
+                posted = set(request.POST.getlist(f"roles_{m.pk}")) & assignable
+                kept = {r for r in m.roles if r not in assignable}
+                new_roles = sorted(kept | posted)
+                if new_roles != sorted(m.roles):
+                    m.roles = new_roles
+                    m.save(update_fields=["roles"])
+        messages.success(request, "Les rôles sont enregistrés.")
+        return redirect("roles", pk=trip.pk)
+    rows = [{
+        "member": m,
+        "boxes": [{"code": code, "label": label, "checked": code in m.roles,
+                   "editable": code in assignable and not m.is_organizer}
+                  for code, label in ROLE_CHOICES],
+    } for m in members]
+    return render(request, "trips/roles.html",
+                  {"trip": trip, "rows": rows, "role_choices": ROLE_CHOICES})
+
+
+MAX_LEGS = 40
+
+
+@login_required
+def legs(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    all_legs = list(trip.legs.select_related("proposed_by").prefetch_related("passengers"))
+    sections = []
+    for code, label in DIRECTION_CHOICES:
+        items = [leg for leg in all_legs if leg.direction == code]
+        previous, total, has_price = None, Decimal("0"), False
+        for leg in items:
+            leg.can_edit = me.can_manage or leg.proposed_by_id == me.pk
+            leg.is_passenger = any(p.pk == me.pk for p in leg.passengers.all())
+            leg.can_join = (leg.is_car and not leg.is_passenger
+                            and leg.proposed_by_id != me.pk and (leg.seats_left or 0) > 0)
+            leg.warning = bool(previous and previous.arrival_at and leg.departure_at
+                               and leg.departure_at < previous.arrival_at)
+            if leg.price is not None:
+                total += leg.price
+                has_price = True
+            previous = leg
+        sections.append({"code": code, "label": label, "legs": items,
+                         "total": total if has_price else None})
+    return render(request, "trips/legs.html", {"trip": trip, "sections": sections})
+
+
+@login_required
+def leg_add(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if trip.legs.count() >= MAX_LEGS:
+        messages.error(request, f"Maximum {MAX_LEGS} trajets par voyage.")
+        return redirect("legs", pk=trip.pk)
+    direction = request.GET.get("sens")
+    if direction not in ("out", "back"):
+        direction = "out"
+    initial = {"direction": direction, "transport": "train",
+               "position": min(trip.legs.filter(direction=direction).count() + 1, 20)}
+    form = LegForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        leg = form.save(commit=False)
+        leg.trip, leg.proposed_by = trip, me
+        leg.save()
+        return redirect("legs", pk=trip.pk)
+    return render(request, "trips/leg_form.html",
+                  {"form": form, "trip": trip, "title": "Ajouter une étape"})
+
+
+def _leg_for_member(request, leg_pk):
+    leg = get_object_or_404(Leg, pk=leg_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, leg.trip_id)
+    return leg, trip, me
+
+
+@login_required
+def leg_edit(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    if not (me.can_manage or leg.proposed_by_id == me.pk):
+        raise PermissionDenied
+    form = LegForm(request.POST or None, instance=leg)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("legs", pk=trip.pk)
+    return render(request, "trips/leg_form.html",
+                  {"form": form, "trip": trip, "title": f"Modifier : {leg.name}"})
+
+
+@login_required
+@require_POST
+def leg_delete(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    if not (me.can_manage or leg.proposed_by_id == me.pk):
+        raise PermissionDenied
+    leg.delete()
+    return redirect("legs", pk=trip.pk)
+
+
+@login_required
+@require_POST
+def leg_join(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    with transaction.atomic():
+        if not leg.is_car:
+            messages.error(request, "Seules les voitures ont des passagers.")
+        elif leg.proposed_by_id == me.pk:
+            messages.error(request, "Vous conduisez déjà cette voiture.")
+        elif leg.passengers.filter(pk=me.pk).exists():
+            messages.info(request, "Vous êtes déjà passager de cette voiture.")
+        elif leg.seats is None or leg.passengers.count() >= leg.seats:
+            messages.error(request, "Il n’y a plus de place dans cette voiture.")
+        else:
+            leg.passengers.add(me)
+            if leg.passengers.count() > leg.seats:  # deux inscriptions simultanées
+                leg.passengers.remove(me)
+                messages.error(request, "Il n’y a plus de place dans cette voiture.")
+            else:
+                messages.success(request, "Vous êtes ajouté comme passager.")
+    return redirect("legs", pk=trip.pk)
+
+
+@login_required
+@require_POST
+def leg_leave(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    leg.passengers.remove(me)
+    messages.success(request, "Vous n’êtes plus passager de cette voiture.")
+    return redirect("legs", pk=trip.pk)
+
+
+@login_required
+@require_POST
+def leg_remove(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    if not (me.can_manage or leg.proposed_by_id == me.pk):
+        raise PermissionDenied
+    member_id = _int_or_none(request.POST.get("member_id"))
+    if member_id is not None:
+        leg.passengers.remove(*leg.passengers.filter(pk=member_id))
+    return redirect("legs", pk=trip.pk)

@@ -5,7 +5,7 @@ from django import forms
 from django.utils import timezone
 
 from .models import (CATEGORY_CHOICES, DateOption, Destination, Expense, Meal, 
-                     Member, Trip)
+                     Member, Trip, Leg)
 from .settlement import equal_split, to_cents
 from .shopping import format_line, parse_line
 
@@ -268,3 +268,44 @@ class MealForm(forms.ModelForm):
             raise forms.ValidationError("60 articles au maximum par repas.")
         self.items_parsed = parsed
         return text
+
+class LegForm(forms.ModelForm):
+    class Meta:
+        model = Leg
+        fields = ["direction", "position", "name", "transport", "departure_place",
+                  "departure_at", "arrival_place", "arrival_at", "price", "status", "seats"]
+        widgets = {
+            "departure_at": forms.DateTimeInput(attrs={"type": "datetime-local"},
+                                                format="%Y-%m-%dT%H:%M"),
+            "arrival_at": forms.DateTimeInput(attrs={"type": "datetime-local"},
+                                              format="%Y-%m-%dT%H:%M"),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in ("departure_at", "arrival_at"):
+            self.fields[name].input_formats = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S",
+                                               "%Y-%m-%d %H:%M"]
+        self.fields["price"].widget.attrs.update(step="0.01", min="0")
+        self.fields["seats"].help_text = ("Seulement pour la voiture : nombre de places "
+                                          "libres pour les autres membres.")
+
+    def clean(self):
+        cleaned = super().clean()
+        dep, arr = cleaned.get("departure_at"), cleaned.get("arrival_at")
+        if dep and arr and arr < dep:
+            self.add_error("arrival_at", "L’arrivée doit être après le départ.")
+        transport, seats = cleaned.get("transport"), cleaned.get("seats")
+        passengers = self.instance.passengers.count() if self.instance.pk else 0
+        if transport == "car":
+            if seats is None:
+                self.add_error("seats", "Indiquez les places disponibles pour une voiture.")
+            elif seats < passengers:
+                self.add_error("seats", f"{passengers} passager(s) déjà inscrit(s) : "
+                                        "retirez-en d’abord.")
+        elif transport:
+            cleaned["seats"] = None
+            if passengers:
+                self.add_error("transport", "Retirez d’abord les passagers pour changer "
+                                            "de type de transport.")
+        return cleaned
