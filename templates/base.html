@@ -26,6 +26,7 @@
   <a href="{% url 'date_list' trip.pk %}"{% if n == 'date_list' %} aria-current="page"{% endif %}>Dates</a>
   <a href="{% url 'votes' trip.pk %}"{% if n == 'votes' %} aria-current="page"{% endif %}>Votes</a>
   <a href="{% url 'trip_summary' trip.pk %}"{% if n == 'trip_summary' %} aria-current="page"{% endif %}>Synthèse</a>
+  <a href="{% url 'meals' trip.pk %}"{% if n == 'meals' or n == 'meal_add' or n == 'meal_edit' or n == 'meal_shopping' %} aria-current="page"{% endif %}>Repas</a>
   <a href="{% url 'budget' trip.pk %}"{% if n == 'budget' or n == 'expense_add' or n == 'expense_edit' or n == 'solidarity' %} aria-current="page"{% endif %}>Budget</a>
 </div></nav>
 {% endwith %}

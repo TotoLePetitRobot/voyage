@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Liste de courses – {{ trip.name }}</h1>
+<p>Repas inclus ({{ selected|length }}) :</p>
+<ul>
+  {% for m in selected %}
+    <li>Jour {{ m.day }} · {{ m.get_meal_type_display }} : {{ m.title }}</li>
+  {% empty %}
+    <li>Aucun repas sélectionné.</li>
+  {% endfor %}
+</ul>
+
+<h2>À acheter</h2>
+{% if shopping %}
+  <ul class="shopping-list">
+    {% for s in shopping %}
+      <li><label><input type="checkbox"><span>{{ s.line }}</span></label>
+        {% if s.meals|length > 1 %}<small>({{ s.meals|length }} repas)</small>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  <h2>Texte à copier</h2>
+  <textarea readonly rows="8" onclick="this.select()">{{ text }}</textarea>
+  <p><small>Les quantités d’un même article sont additionnées (g et kg ensemble, ml, cl, dl et l ensemble). Les articles avec des unités différentes, par exemple « 2 boîtes » et « 500 g », restent sur des lignes séparées.</small></p>
+{% else %}
+  <p>Aucun article dans les repas sélectionnés.</p>
+{% endif %}
+<p><a href="{% url 'meals' trip.pk %}">Retour aux repas</a></p>
+{% endblock %}

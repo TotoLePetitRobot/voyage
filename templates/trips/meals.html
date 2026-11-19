@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Repas – {{ trip.name }}</h1>
+<p><a href="{% url 'meal_add' trip.pk %}">Proposer un repas</a></p>
+
+{% if days %}
+<form id="select-form" method="get" action="{% url 'meal_shopping' trip.pk %}" class="card">
+  <p><b>Liste de courses</b> : cochez des repas ci-dessous, ou indiquez une plage de jours.</p>
+  <p>Du jour <input type="number" name="from" min="1" max="60" style="width:5em">
+     au jour <input type="number" name="to" min="1" max="60" style="width:5em">
+     <small>(les repas cochés priment sur la plage)</small></p>
+  <button>Créer la liste de courses</button>
+  <a href="{% url 'meal_shopping' trip.pk %}">ou celle de tous les repas</a>
+</form>
+{% endif %}
+
+{% for day, day_meals in days %}
+  <h2>Jour {{ day }}</h2>
+  {% for meal in day_meals %}
+  <div class="card">
+    <h3><label><input type="checkbox" name="m" value="{{ meal.pk }}" form="select-form">
+      {{ meal.get_meal_type_display }} : {{ meal.title }}</label></h3>
+    {% if meal.proposed_by %}<small>Proposé par {{ meal.proposed_by.label }}</small>{% endif %}
+    {% if meal.items.all %}
+      <ul>{% for i in meal.items.all %}<li>{{ i.display }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if meal.recipe %}
+      <details><summary>Recette</summary><p>{{ meal.recipe|linebreaksbr }}</p></details>
+    {% endif %}
+    {% if meal.can_edit %}
+      <a href="{% url 'meal_edit' meal.pk %}">Modifier</a>
+      <form method="post" action="{% url 'meal_delete' meal.pk %}" style="display:inline"
+            onsubmit="return confirm('Supprimer ce repas ?')">{% csrf_token %}<button>Supprimer</button></form>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% empty %}
+  <p>Aucun repas pour l’instant.</p>
+{% endfor %}
+{% endblock %}

@@ -22,4 +22,9 @@ urlpatterns = [
     path("voyages/<int:pk>/solidarite/", views.solidarity, name="solidarity"),
     path("voyages/<int:pk>/destinations/<int:dest_pk>/recherche/", views.search, name="search"),
     path("voyages/<int:pk>/pseudo/", views.trip_pseudo, name="trip_pseudo"),
+    path("voyages/<int:pk>/repas/", views.meals, name="meals"),
+    path("voyages/<int:pk>/repas/nouveau/", views.meal_add, name="meal_add"),
+    path("voyages/<int:pk>/repas/courses/", views.meal_shopping, name="meal_shopping"),
+    path("repas/<int:meal_pk>/modifier/", views.meal_edit, name="meal_edit"),
+    path("repas/<int:meal_pk>/supprimer/", views.meal_delete, name="meal_delete"),
 ]

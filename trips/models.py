@@ -5,6 +5,8 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from decimal import Decimal
 from django.utils import timezone
 
+from .shopping import format_line
+
 def make_token():
     return secrets.token_urlsafe(16)
 
@@ -186,3 +188,39 @@ class SolidarityPref(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["member", "category"], name="unique_pref_per_category")
         ]
+
+MEAL_TYPES = [(1, "Petit-déjeuner"), (2, "Déjeuner"), (3, "Goûter"), (4, "Dîner"), (5, "Autre")]
+
+
+class Meal(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="meals")
+    title = models.CharField("Repas", max_length=120)
+    day = models.PositiveSmallIntegerField(
+        "Jour n°", default=1, validators=[MinValueValidator(1), MaxValueValidator(60)],
+        help_text="1 = premier jour du séjour.")
+    meal_type = models.PositiveSmallIntegerField("Type", choices=MEAL_TYPES, default=2)
+    recipe = models.TextField("Recette (facultatif)", blank=True)
+    proposed_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="proposed_meals")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["day", "meal_type", "created_at"]
+
+    def __str__(self):
+        return f"J{self.day} – {self.title}"
+
+
+class MealItem(models.Model):
+    meal = models.ForeignKey(Meal, on_delete=models.CASCADE, related_name="items")
+    name = models.CharField(max_length=120)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    unit = models.CharField(max_length=3, blank=True)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["position", "id"]
+
+    @property
+    def display(self):
+        return format_line(self.name, self.quantity, self.unit)

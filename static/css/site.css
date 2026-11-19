@@ -108,3 +108,9 @@ fieldset label:has(input:checked) { background: var(--brand-soft); border-color:
   .who { display: none; }
   .wrap { padding: 16px 14px 48px; }
 }
+
+.wrap .shopping-list { list-style: none; padding-left: 0; }
+.shopping-list input:checked + span { text-decoration: line-through; color: var(--muted); }
+details { margin: 8px 0; }
+summary { cursor: pointer; color: var(--brand); font-weight: 600; }
+@media print { .topbar, .tabs, button, form { display: none; } }

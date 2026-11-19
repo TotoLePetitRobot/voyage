@@ -12,9 +12,10 @@ from django.urls import reverse
 from .backup import backup_sqlite
 from .importers import parse_destinations
 from .links import lodging_links, sncf_phrase, train_links
-from .models import (DateOption, Destination, Expense, ExpenseShare, Member, 
-                     SolidarityPref, Trip)
+from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
+                     MealItem, Member, SolidarityPref, Trip)
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
+from .shopping import aggregate, format_line, parse_line
 from .views import trip_balances
 
 
@@ -323,3 +324,145 @@ class MultiStationSearchTests(TestCase):
         self.assertContains(r, "Lyon Valence TGV le 6 février")
         self.assertContains(r, "Grenoble Paris le 13 février")
         self.assertContains(r, "Valence TGV Paris le 13 février")
+
+D = Decimal
+
+
+class ShoppingLogicTests(SimpleTestCase):
+    def test_parse_line(self):
+        self.assertIsNone(parse_line("   "))
+        self.assertEqual(parse_line("500 g de riz"),
+                         {"name": "riz", "quantity": D("500.000"), "unit": "g"})
+        self.assertEqual(parse_line("500g riz")["unit"], "g")
+        self.assertEqual(parse_line("1,5 kg pommes de terre")["quantity"], D("1.500"))
+        self.assertEqual(parse_line("3 tomates"),
+                         {"name": "tomates", "quantity": D("3.000"), "unit": ""})
+        self.assertEqual(parse_line("1/2 citron")["quantity"], D("0.500"))
+        self.assertEqual(parse_line("2 Litres d'eau"),
+                         {"name": "eau", "quantity": D("2.000"), "unit": "l"})
+        self.assertEqual(parse_line("2 boîtes de tomates")["name"], "boîtes de tomates")
+        self.assertEqual(parse_line("sel"), {"name": "sel", "quantity": None, "unit": ""})
+        self.assertEqual(parse_line("3 gorgonzola")["unit"], "")
+
+    def test_invalid_lines(self):
+        for bad in ["0 g riz", "2 l", "12", "1/0 riz", "5000000 g riz", "0,0001 g riz", "x" * 121]:
+            with self.assertRaises(ValueError, msg=bad):
+                parse_line(bad)
+
+    def test_round_trip(self):
+        for text in ["500 g riz", "3 tomates", "sel", "1,5 kg pommes de terre", "250 ml crème"]:
+            item = parse_line(text)
+            again = parse_line(format_line(item["name"], item["quantity"], item["unit"]))
+            self.assertEqual(item, again, text)
+
+    def test_aggregate(self):
+        rows = [
+            ("a", "tomates", D(3), ""), ("b", "Tomate", D(2), ""),
+            ("a", "riz", D(500), "g"), ("b", "Riz", D(1), "kg"),
+            ("a", "lait", D(250), "ml"), ("b", "Lait", D(1), "l"),
+            ("a", "sel", None, ""), ("b", "sel", None, ""),
+            ("a", "farine", D(500), "g"), ("b", "farine", D(2), ""),
+            ("a", "Crème", D(10), "cl"), ("b", "creme", D(20), "cl"),
+            ("a", "œufs", D(6), ""), ("b", "oeuf", D(2), ""),
+        ]
+        result = aggregate(rows)
+        lines = [r["line"] for r in result]
+        for expected in ("5 tomates", "1,5 kg riz", "1,25 l lait", "sel", "500 g farine",
+                         "2 farine", "300 ml Crème", "8 œufs"):
+            self.assertIn(expected, lines)
+        self.assertEqual(next(r for r in result if r["name"] == "sel")["meals"], ["a", "b"])
+
+    def test_fractions_add_up(self):
+        rows = [("a", "citron", D("0.5"), ""), ("b", "citron", D("0.5"), ""),
+                ("c", "citron", D("1"), "")]
+        self.assertEqual(aggregate(rows)[0]["line"], "2 citron")
+
+
+class MealViewTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.org = U.objects.create_user("orga", password="pw-test-123")
+        self.other = U.objects.create_user("autre", password="pw-test-123")
+        self.stranger = U.objects.create_user("intrus", password="pw-test-123")
+        self.trip = Trip.objects.create(name="Test")
+        self.m_org = Member.objects.create(trip=self.trip, display_name="Orga",
+                                           user=self.org, is_organizer=True)
+        self.m_other = Member.objects.create(trip=self.trip, display_name="Autre",
+                                             user=self.other)
+
+    def make_meal(self, day, title, items, meal_type=2):
+        meal = Meal.objects.create(trip=self.trip, title=title, day=day,
+                                   meal_type=meal_type, proposed_by=self.m_org)
+        for n, (name, qty, unit) in enumerate(items):
+            MealItem.objects.create(meal=meal, name=name, quantity=qty, unit=unit, position=n)
+        return meal
+
+    def test_add_meal_parses_items(self):
+        self.client.force_login(self.org)
+        r = self.client.post(reverse("meal_add", args=[self.trip.pk]), {
+            "title": "Pâtes", "day": 1, "meal_type": 4, "recipe": "",
+            "items_text": "500 g de pâtes\n3 tomates\nsel"})
+        self.assertEqual(r.status_code, 302)
+        items = [(i.name, i.quantity, i.unit) for i in Meal.objects.get().items.all()]
+        self.assertEqual(items, [("pâtes", D("500.000"), "g"),
+                                 ("tomates", D("3.000"), ""), ("sel", None, "")])
+
+    def test_invalid_item_line_is_reported(self):
+        self.client.force_login(self.org)
+        r = self.client.post(reverse("meal_add", args=[self.trip.pk]), {
+            "title": "Pâtes", "day": 1, "meal_type": 4, "items_text": "sel\n0 g riz"})
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "Ligne 2")
+        self.assertEqual(Meal.objects.count(), 0)
+
+    def test_edit_shows_existing_items_and_replaces_them(self):
+        meal = self.make_meal(1, "Riz", [("riz", D("500"), "g")])
+        self.client.force_login(self.org)
+        url = reverse("meal_edit", args=[meal.pk])
+        self.assertContains(self.client.get(url), "500 g riz")
+        self.client.post(url, {"title": "Riz", "day": 1, "meal_type": 2,
+                               "items_text": "2 kg riz"})
+        self.assertEqual([i.display for i in meal.items.all()], ["2 kg riz"])
+
+    def test_shopping_list_adds_quantities_over_a_day_range(self):
+        self.make_meal(1, "Riz", [("riz", D("500"), "g"), ("tomates", D("2"), "")])
+        self.make_meal(2, "Salade", [("riz", D("1"), "kg"), ("sel", None, "")])
+        self.make_meal(3, "Tomates farcies", [("tomates", D("3"), "")])
+        self.client.force_login(self.other)
+        url = reverse("meal_shopping", args=[self.trip.pk])
+        r = self.client.get(url, {"from": "1", "to": "2"})
+        self.assertContains(r, "1,5 kg riz")
+        self.assertContains(r, "2 tomates")
+        self.assertNotContains(r, "5 tomates")
+        self.assertContains(self.client.get(url), "5 tomates")
+
+    def test_checked_meals_take_priority_over_range(self):
+        first = self.make_meal(1, "Riz", [("riz", D("500"), "g")])
+        self.make_meal(2, "Pâtes", [("pâtes", D("300"), "g")])
+        self.client.force_login(self.org)
+        r = self.client.get(reverse("meal_shopping", args=[self.trip.pk]),
+                            {"m": str(first.pk), "from": "2", "to": "2"})
+        self.assertContains(r, "500 g riz")
+        self.assertNotContains(r, "pâtes")
+
+    def test_odd_query_values_do_not_crash(self):
+        self.client.force_login(self.org)
+        r = self.client.get(reverse("meal_shopping", args=[self.trip.pk]),
+                            {"from": "²", "to": "x", "m": "٣"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_only_proposer_or_organizer_can_edit_or_delete(self):
+        meal = self.make_meal(1, "Riz", [])
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(reverse("meal_edit", args=[meal.pk])).status_code, 403)
+        self.assertEqual(self.client.post(reverse("meal_delete", args=[meal.pk])).status_code, 403)
+        self.assertTrue(Meal.objects.filter(pk=meal.pk).exists())
+        self.client.force_login(self.org)
+        self.client.post(reverse("meal_delete", args=[meal.pk]))
+        self.assertFalse(Meal.objects.filter(pk=meal.pk).exists())
+
+    def test_outsider_gets_404(self):
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.get(reverse("meals", args=[self.trip.pk])).status_code, 404)
+        self.assertEqual(
+            self.client.get(reverse("meal_shopping", args=[self.trip.pk])).status_code, 404)

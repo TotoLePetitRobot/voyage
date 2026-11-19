@@ -15,14 +15,16 @@ from django.views.decorators.http import require_POST
 
 from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
-                    MemberForm, PseudoForm, SolidarityForm, TripForm)
+                    MealForm, MemberForm, PseudoForm, SolidarityForm, TripForm)
 from .importers import parse_destinations
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
 from .middleware import PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
-                     Expense, ExpenseShare, Member, SolidarityPref, Trip)
+                     Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
+                     Trip)
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
+from .shopping import aggregate
 
 def get_trip_and_member(request, pk, require_pseudo=True):
     trip = get_object_or_404(Trip, pk=pk, members__user=request.user)
@@ -440,9 +442,9 @@ def search(request, pk, dest_pk):
 
     options = list(with_scores(trip.date_options.all()).order_by("-total", "-yes", "start_date"))
     chosen = None
-    raw = request.GET.get("p", "")
-    if raw.isdigit():
-        chosen = next((o for o in options if o.pk == int(raw)), None)
+    pick = _int_or_none(request.GET.get("p"))
+    if pick is not None:
+        chosen = next((o for o in options if o.pk == pick), None)
     if chosen is None and options:
         chosen = options[0]
 
@@ -484,4 +486,92 @@ def search(request, pk, dest_pk):
         "trip": trip, "dest": dest, "options": options, "chosen": chosen,
         "lodging": lodging, "dated": dated, "adults": len(members),
         "outward": outward, "back": back, "sncf_url": SNCF_CONNECT_URL,
+    })
+
+def _int_or_none(value, max_len=6):
+    value = (value or "").strip()
+    return int(value) if value.isascii() and value.isdigit() and len(value) <= max_len else None
+
+
+def _save_meal(form, trip, me):
+    with transaction.atomic():
+        meal = form.save(commit=False)
+        if meal.pk is None:
+            meal.trip, meal.proposed_by = trip, me
+        meal.save()
+        meal.items.all().delete()
+        MealItem.objects.bulk_create([
+            MealItem(meal=meal, name=i["name"], quantity=i["quantity"],
+                     unit=i["unit"], position=n)
+            for n, i in enumerate(form.items_parsed)
+        ])
+    return meal
+
+
+@login_required
+def meals(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    days = {}
+    for meal in trip.meals.select_related("proposed_by").prefetch_related("items"):
+        meal.can_edit = me.is_organizer or meal.proposed_by_id == me.pk
+        days.setdefault(meal.day, []).append(meal)
+    return render(request, "trips/meals.html", {"trip": trip, "days": sorted(days.items())})
+
+
+@login_required
+def meal_add(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    form = MealForm(request.POST or None, initial={"day": 1, "meal_type": 2})
+    if request.method == "POST" and form.is_valid():
+        _save_meal(form, trip, me)
+        return redirect("meals", pk=trip.pk)
+    return render(request, "trips/meal_form.html",
+                  {"form": form, "trip": trip, "title": "Proposer un repas"})
+
+
+@login_required
+def meal_edit(request, meal_pk):
+    meal = get_object_or_404(Meal, pk=meal_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, meal.trip_id)
+    if not (me.is_organizer or meal.proposed_by_id == me.pk):
+        raise PermissionDenied
+    form = MealForm(request.POST or None, instance=meal)
+    if request.method == "POST" and form.is_valid():
+        _save_meal(form, trip, me)
+        return redirect("meals", pk=trip.pk)
+    return render(request, "trips/meal_form.html",
+                  {"form": form, "trip": trip, "title": f"Modifier : {meal.title}"})
+
+
+@login_required
+@require_POST
+def meal_delete(request, meal_pk):
+    meal = get_object_or_404(Meal, pk=meal_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, meal.trip_id)
+    if not (me.is_organizer or meal.proposed_by_id == me.pk):
+        raise PermissionDenied
+    meal.delete()
+    return redirect("meals", pk=trip.pk)
+
+
+@login_required
+def meal_shopping(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    all_meals = list(trip.meals.prefetch_related("items"))
+    ids = {i for i in (_int_or_none(v) for v in request.GET.getlist("m")) if i is not None}
+    low, high = _int_or_none(request.GET.get("from")), _int_or_none(request.GET.get("to"))
+    if ids:
+        selected = [m for m in all_meals if m.pk in ids]
+    elif low is not None or high is not None:
+        low = 1 if low is None else low
+        high = 10 ** 6 if high is None else high
+        selected = [m for m in all_meals if low <= m.day <= high]
+    else:
+        selected = all_meals
+    rows = [(f"J{m.day} {m.get_meal_type_display()} : {m.title}", i.name, i.quantity, i.unit)
+            for m in selected for i in m.items.all()]
+    shopping = aggregate(rows)
+    return render(request, "trips/shopping.html", {
+        "trip": trip, "selected": selected, "shopping": shopping,
+        "text": "\n".join(f"- {s['line']}" for s in shopping),
     })

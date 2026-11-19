@@ -4,8 +4,10 @@ from decimal import Decimal
 from django import forms
 from django.utils import timezone
 
-from .models import CATEGORY_CHOICES, DateOption, Destination, Expense, Member, Trip
+from .models import (CATEGORY_CHOICES, DateOption, Destination, Expense, Meal, 
+                     Member, Trip)
 from .settlement import equal_split, to_cents
+from .shopping import format_line, parse_line
 
 class TripForm(forms.ModelForm):
     class Meta:
@@ -225,3 +227,44 @@ class SolidarityForm(forms.Form):
             if cleaned.get(f"opt_{code}") and cleaned.get(f"w_{code}") is None:
                 self.add_error(f"w_{code}", "Indiquez un poids (1 = part normale).")
         return cleaned
+
+class MealForm(forms.ModelForm):
+    items_text = forms.CharField(
+        label="Liste de courses (facultatif)", required=False,
+        widget=forms.Textarea(attrs={"rows": 6}),
+        help_text="Un article par ligne, quantité facultative. Exemples : « 500 g de riz », "
+                  "« 3 tomates », « sel ». Unités reconnues : g, kg, ml, cl, dl, l.",
+    )
+
+    class Meta:
+        model = Meal
+        fields = ["title", "day", "meal_type", "recipe"]
+        widgets = {"recipe": forms.Textarea(attrs={"rows": 6})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.items_parsed = []
+        if self.instance.pk:
+            self.fields["items_text"].initial = "\n".join(
+                format_line(i.name, i.quantity, i.unit) for i in self.instance.items.all())
+
+    def clean_recipe(self):
+        recipe = self.cleaned_data["recipe"].strip()
+        if len(recipe) > 5000:
+            raise forms.ValidationError("5000 caractères au maximum.")
+        return recipe
+
+    def clean_items_text(self):
+        text = self.cleaned_data["items_text"]
+        parsed = []
+        for number, line in enumerate(text.splitlines(), 1):
+            try:
+                item = parse_line(line)
+            except ValueError as error:
+                raise forms.ValidationError(f"Ligne {number} : {error}.")
+            if item:
+                parsed.append(item)
+        if len(parsed) > 60:
+            raise forms.ValidationError("60 articles au maximum par repas.")
+        self.items_parsed = parsed
+        return text
