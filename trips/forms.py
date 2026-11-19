@@ -13,10 +13,31 @@ class TripForm(forms.ModelForm):
         fields = ["name"]
 
 
-class MemberForm(forms.ModelForm):
+class PseudoForm(forms.ModelForm):
     class Meta:
         model = Member
-        fields = ["display_name", "origin_city", "budget", "budget_anonymous"]
+        fields = ["display_name"]
+        labels = {"display_name": "Votre pseudo dans ce voyage"}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["display_name"].required = True
+
+    def clean_display_name(self):
+        name = " ".join(self.cleaned_data["display_name"].split())
+        if len(name) < 2:
+            raise forms.ValidationError("Au moins 2 caractères.")
+        if len(name) > 30:
+            raise forms.ValidationError("30 caractères au maximum.")
+        clash = Member.objects.filter(trip=self.instance.trip, display_name__iexact=name)
+        if clash.exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError("Ce pseudo est déjà utilisé dans ce voyage.")
+        return name
+
+
+class MemberForm(PseudoForm):
+    class Meta(PseudoForm.Meta):
+        fields = ["display_name", "origin_city", "return_city", "budget", "budget_anonymous"]
 
 
 class DestinationForm(forms.ModelForm):
@@ -30,6 +51,7 @@ class DestinationForm(forms.ModelForm):
     class Meta:
         model = Destination
         fields = ["name", "nearest_station", "url", "notes"]
+        widgets = {"nearest_station": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -56,6 +78,18 @@ class DestinationForm(forms.ModelForm):
     def save(self, commit=True):
         self.instance.extra_info = self.cleaned_data["extra_text"]
         return super().save(commit)
+
+    def clean_nearest_station(self):
+        lines = []
+        for line in self.cleaned_data["nearest_station"].splitlines():
+            name = " ".join(line.split())
+            if name and name.casefold() not in {l.casefold() for l in lines}:
+                lines.append(name)
+        if len(lines) > 5:
+            raise forms.ValidationError("5 gares au maximum.")
+        if any(len(l) > 120 for l in lines):
+            raise forms.ValidationError("120 caractères au maximum par gare.")
+        return "\n".join(lines)
 
 
 class ImportForm(forms.Form):

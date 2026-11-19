@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Votre pseudo : {{ trip_name }}</h1>
+<p>Les autres participants verront ce pseudo, <b>jamais votre nom d’utilisateur</b>. Vous pouvez en choisir un différent dans chaque voyage, et le modifier plus tard sur « Ma fiche ».</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Continuer</button></form>
+{% endblock %}

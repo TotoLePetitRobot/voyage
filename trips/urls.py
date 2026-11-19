@@ -21,4 +21,5 @@ urlpatterns = [
     path("depenses/<int:expense_pk>/supprimer/", views.expense_delete, name="expense_delete"),
     path("voyages/<int:pk>/solidarite/", views.solidarity, name="solidarity"),
     path("voyages/<int:pk>/destinations/<int:dest_pk>/recherche/", views.search, name="search"),
+    path("voyages/<int:pk>/pseudo/", views.trip_pseudo, name="trip_pseudo"),
 ]

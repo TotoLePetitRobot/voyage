@@ -10,6 +10,7 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from .backup import backup_sqlite
+from .importers import parse_destinations
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Member, 
                      SolidarityPref, Trip)
@@ -52,8 +53,8 @@ class BudgetViewTests(TestCase):
         self.b = U.objects.create_user("b", password="pw-test-123")
         self.c = U.objects.create_user("c", password="pw-test-123")
         self.trip = Trip.objects.create(name="Test")
-        self.ma = Member.objects.create(trip=self.trip, user=self.a, is_organizer=True)
-        self.mb = Member.objects.create(trip=self.trip, user=self.b)
+        self.ma = Member.objects.create(trip=self.trip, display_name="Pseudo", user=self.a, is_organizer=True)
+        self.mb = Member.objects.create(trip=self.trip, display_name="Pseudo", user=self.b)
 
     def add_expense(self, amount="30.00"):
         return self.client.post(reverse("expense_add", args=[self.trip.pk]), {
@@ -134,7 +135,7 @@ class EquityBalanceTests(TestCase):
         self.m = []
         for i, name in enumerate("abc"):
             user = U.objects.create_user(name, password="pw-test-123")
-            self.m.append(Member.objects.create(trip=self.trip, user=user, is_organizer=(i == 0)))
+            self.m.append(Member.objects.create(trip=self.trip, display_name="Pseudo", user=user, is_organizer=(i == 0)))
 
     def expense(self, payer, amount, category, shares):
         e = Expense.objects.create(trip=self.trip, paid_by=payer, created_by=payer,
@@ -211,7 +212,7 @@ class SearchViewTests(TestCase):
         self.a = U.objects.create_user("a", password="pw-test-123")
         self.outsider = U.objects.create_user("z", password="pw-test-123")
         self.trip = Trip.objects.create(name="Test")
-        Member.objects.create(trip=self.trip, user=self.a, origin_city="Lyon")
+        Member.objects.create(trip=self.trip, display_name="Pseudo", user=self.a, origin_city="Lyon")
         self.dest = Destination.objects.create(trip=self.trip, name="Chamonix", 
                                                nearest_station="Chamonix-Mont-Blanc")
         DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
@@ -256,3 +257,69 @@ class BackupTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(FileNotFoundError):
                 backup_sqlite(Path(tmp) / "nope.sqlite3", tmp)
+
+class PseudoTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.a = U.objects.create_user("anna", password="pw-test-123")
+        self.b = U.objects.create_user("secretname", password="pw-test-123")
+        self.trip = Trip.objects.create(name="Test")
+        self.ma = Member.objects.create(trip=self.trip, user=self.a)
+        self.mb = Member.objects.create(trip=self.trip, user=self.b, display_name="Bob",
+                                        budget=Decimal("100"))
+
+    def test_member_without_pseudo_is_redirected(self):
+        self.client.force_login(self.a)
+        r = self.client.get(reverse("trip_detail", args=[self.trip.pk]))
+        self.assertRedirects(r, reverse("trip_pseudo", args=[self.trip.pk]))
+
+    def test_setting_pseudo_unlocks_the_trip(self):
+        self.client.force_login(self.a)
+        r = self.client.post(reverse("trip_pseudo", args=[self.trip.pk]), {"display_name": "Anna"})
+        self.assertRedirects(r, reverse("trip_detail", args=[self.trip.pk]))
+        self.assertEqual(self.client.get(reverse("budget", args=[self.trip.pk])).status_code, 200)
+
+    def test_pseudo_must_be_unique_ignoring_case(self):
+        self.client.force_login(self.a)
+        r = self.client.post(reverse("trip_pseudo", args=[self.trip.pk]), {"display_name": "bob"})
+        self.assertEqual(r.status_code, 200)
+        self.ma.refresh_from_db()
+        self.assertEqual(self.ma.display_name, "")
+
+    def test_username_is_never_shown_to_others(self):
+        self.ma.display_name = "Anna"
+        self.ma.save()
+        self.client.force_login(self.a)
+        for name in ("trip_detail", "budget", "trip_summary"):
+            r = self.client.get(reverse(name, args=[self.trip.pk]))
+            self.assertContains(r, "Bob")
+            self.assertNotContains(r, "secretname")
+
+
+class StationsTests(SimpleTestCase):
+    def test_stations_property(self):
+        d = Destination(name="X", nearest_station=" Grenoble\n\nvalence tgv \ngrenoble")
+        self.assertEqual(d.stations, ["Grenoble", "valence tgv"])
+
+    def test_csv_import_splits_stations(self):
+        rows = parse_destinations("nom;gare\nVillard-de-Lans;Grenoble|Valence TGV\n")
+        self.assertEqual(rows[0]["station"], "Grenoble\nValence TGV")
+
+
+class MultiStationSearchTests(TestCase):
+    def test_several_stations_and_return_place(self):
+        U = get_user_model()
+        user = U.objects.create_user("anna", password="pw-test-123")
+        trip = Trip.objects.create(name="Test")
+        Member.objects.create(trip=trip, user=user, display_name="Anna",
+                              origin_city="Lyon", return_city="Paris")
+        dest = Destination.objects.create(trip=trip, name="Villard-de-Lans",
+                                          nearest_station="Grenoble\nValence TGV")
+        DateOption.objects.create(trip=trip, start_date=date(2027, 2, 6),
+                                  end_date=date(2027, 2, 13))
+        self.client.force_login(user)
+        r = self.client.get(reverse("search", args=[trip.pk, dest.pk]))
+        self.assertContains(r, "Lyon Grenoble le 6 février")
+        self.assertContains(r, "Lyon Valence TGV le 6 février")
+        self.assertContains(r, "Grenoble Paris le 13 février")
+        self.assertContains(r, "Valence TGV Paris le 13 février")

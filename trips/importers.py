@@ -52,7 +52,8 @@ def parse_destinations(text):
             elif col in NOTE_KEYS:
                 notes = value
             elif col in STATION_KEYS:
-                station = value[:120]
+                parts = [p.strip()[:120] for p in value.split("|") if p.strip()]
+                station = "\n".join(parts[:5])
             else:
                 extra[h.strip()] = value
         rows.append({"name": name, "url": url, "notes": notes, "station": station, "extra": extra})

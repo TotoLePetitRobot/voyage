@@ -23,24 +23,48 @@
   {% endfor %}
 </ul>
 
-<h2>Trajets vers {{ target }}</h2>
-{% if not dest.nearest_station %}
-  <p><small>Astuce : indiquez la gare la plus proche en <a href="{% url 'destination_edit' dest.pk %}">modifiant la destination</a>.</small></p>
+<h2>Trajets aller</h2>
+{% if not dest.stations %}
+  <p><small>Astuce : indiquez les gares les plus proches en <a href="{% url 'destination_edit' dest.pk %}">modifiant la destination</a>.</small></p>
 {% endif %}
-{% for t in trains %}
-  <h3>Depuis {{ t.origin }} ({{ t.count }} personne{{ t.count|pluralize }})</h3>
-  <ul>
-    {% for l in t.links %}
-      <li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a></li>
-    {% endfor %}
-    <li><a href="{{ sncf_url }}" target="_blank" rel="noopener noreferrer">SNCF Connect</a>
-      – tapez ou collez dans sa recherche :
-      <input value="{{ t.sncf_phrase }}" readonly size="42" onclick="this.select()">
-      <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(this.previousElementSibling.value)">Copier</button>
-    </li>
-  </ul>
+{% for g in outward %}
+  <h3>Depuis {{ g.place }} ({{ g.count }} personne{{ g.count|pluralize }})</h3>
+  {% for r in g.routes %}
+    <p><b>Vers {{ r.target }}</b></p>
+    <ul>
+      {% for l in r.links %}
+        <li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a></li>
+      {% endfor %}
+      <li><a href="{{ sncf_url }}" target="_blank" rel="noopener noreferrer">SNCF Connect</a>
+        – tapez ou collez dans sa recherche :
+        <input value="{{ r.sncf_phrase }}" readonly size="42" onclick="this.select()">
+        <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(this.previousElementSibling.value)">Copier</button>
+      </li>
+    </ul>
+  {% endfor %}
 {% empty %}
   <p>Aucune ville de départ renseignée. Chacun peut l’indiquer sur « Ma fiche ».</p>
+{% endfor %}
+
+<h2>Trajets retour</h2>
+<p><small>Le lieu de retour est celui de « Ma fiche » ; à défaut, le lieu de départ. La date utilisée est la fin de la période.</small></p>
+{% for g in back %}
+  <h3>Vers {{ g.place }} ({{ g.count }} personne{{ g.count|pluralize }})</h3>
+  {% for r in g.routes %}
+    <p><b>Depuis {{ r.source }}</b></p>
+    <ul>
+      {% for l in r.links %}
+        <li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a></li>
+      {% endfor %}
+      <li><a href="{{ sncf_url }}" target="_blank" rel="noopener noreferrer">SNCF Connect</a>
+        – tapez ou collez dans sa recherche :
+        <input value="{{ r.sncf_phrase }}" readonly size="42" onclick="this.select()">
+        <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(this.previousElementSibling.value)">Copier</button>
+      </li>
+    </ul>
+  {% endfor %}
+{% empty %}
+  <p>Aucun lieu de retour ni de départ renseigné.</p>
 {% endfor %}
 <p><small>Les liens Google Maps donnent les itinéraires et les durées, pas les prix des billets ni la date. Pour SNCF Connect, si la phrase est mal comprise, utilisez la recherche détaillée du site.</small></p>
 

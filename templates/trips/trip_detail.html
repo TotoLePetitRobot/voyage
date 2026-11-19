@@ -22,7 +22,7 @@
 {% for d in destinations %}
   <div class="card">
     <h3>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</h3>
-    {% if d.nearest_station %}<small>Gare la plus proche : {{ d.nearest_station }}</small>{% endif %}
+    {% if d.stations %}<small>Gares : {{ d.stations|join:" · " }}</small>{% endif %}
     {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}
     {% if d.notes %}<p>{{ d.notes|linebreaksbr }}</p>{% endif %}
     {% if d.extra_info %}

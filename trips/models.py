@@ -22,6 +22,8 @@ class Member(models.Model):
                              related_name="memberships")
     display_name = models.CharField("Nom affiché", max_length=60, blank=True)
     origin_city = models.CharField("Ville de départ", max_length=100, blank=True)
+    return_city = models.CharField("Lieu de retour (si différent du départ)",
+                                   max_length=100, blank=True)
     budget = models.DecimalField(
         "Budget envisagé (€ par personne)", max_digits=8, decimal_places=2,
         null=True, blank=True, validators=[MinValueValidator(0)],
@@ -45,7 +47,7 @@ class Member(models.Model):
 
     @property
     def label(self):
-        return self.display_name or self.user.username
+        return self.display_name.strip() or "Nouveau membre"
 
     def __str__(self):
         return f"{self.label} – {self.trip}"
@@ -53,10 +55,10 @@ class Member(models.Model):
 class Destination(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="destinations")
     name = models.CharField("Destination", max_length=120)
-    nearest_station = models.CharField(
-        "Gare la plus proche", max_length=120, blank=True,
-        help_text="Utilisée pour les recherches de trajets. Exemple : Gare de Chamonix-Mont-Blanc",
-    )
+    nearest_station = models.TextField(
+        "Gares les plus proches", blank=True,
+        help_text="Une par ligne, 5 maximum. Exemple : Grenoble puis Valence TGV.",
+    )    
     url = models.URLField("Lien", blank=True)
     notes = models.TextField("Notes", blank=True)
     extra_info = models.JSONField(default=dict, blank=True)
@@ -71,6 +73,16 @@ class Destination(models.Model):
     @property
     def extra_pairs(self):
         return list(self.extra_info.items())
+
+    @property
+    def stations(self):
+        seen, out = set(), []
+        for line in self.nearest_station.splitlines():
+            name = " ".join(line.split())
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                out.append(name)
+        return out[:5]
 
     def __str__(self):
         return self.name

@@ -15,17 +15,21 @@ from django.views.decorators.http import require_POST
 
 from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
-                    MemberForm, SolidarityForm, TripForm)
+                    MemberForm, PseudoForm, SolidarityForm, TripForm)
 from .importers import parse_destinations
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
+from .middleware import PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Member, SolidarityPref, Trip)
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
 
-def get_trip_and_member(request, pk):
+def get_trip_and_member(request, pk, require_pseudo=True):
     trip = get_object_or_404(Trip, pk=pk, members__user=request.user)
-    return trip, trip.members.get(user=request.user)
+    me = trip.members.get(user=request.user)
+    if require_pseudo and not me.display_name.strip():
+        raise PseudoRequired(trip.pk)
+    return trip, me
 
 
 def trip_list(request):
@@ -69,6 +73,15 @@ def trip_join(request, token):
     Member.objects.get_or_create(trip=trip, user=request.user)
     return redirect("trip_detail", pk=trip.pk)
 
+
+@login_required
+def trip_pseudo(request, pk):
+    trip, me = get_trip_and_member(request, pk, require_pseudo=False)
+    form = PseudoForm(request.POST or None, instance=me)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("trip_detail", pk=trip.pk)
+    return render(request, "trips/pseudo.html", {"form": form, "trip_name": trip.name})
 
 @login_required
 def destination_add(request, pk):
@@ -441,20 +454,34 @@ def search(request, pk, dest_pk):
         len(members),
     )
 
-    origins = {}
-    for m in members:
-        city = m.origin_city.strip()
-        if city:
-            entry = origins.setdefault(city.casefold(), {"origin": city, "count": 0})
-            entry["count"] += 1
-    day = chosen.start_date if chosen else None
-    trains = [{**o,
-               "links": train_links(o["origin"], dest.name, dest.nearest_station),
-               "sncf_phrase": sncf_phrase(o["origin"], dest.name, dest.nearest_station, day)}
-              for o in sorted(origins.values(), key=lambda o: o["origin"].casefold())]
+    def group(places):
+        groups = {}
+        for city in places:
+            city = city.strip()
+            if city:
+                entry = groups.setdefault(city.casefold(), {"place": city, "count": 0})
+                entry["count"] += 1
+        return sorted(groups.values(), key=lambda g: g["place"].casefold())
+
+    targets = dest.stations or [""]
+    outward_day = chosen.start_date if chosen else None
+    return_day = chosen.end_date if chosen else None
+
+    outward = [{**g, "routes": [{
+        "target": s or dest.name,
+        "links": train_links(g["place"], dest.name, s),
+        "sncf_phrase": sncf_phrase(g["place"], dest.name, s, outward_day),
+    } for s in targets]} for g in group(m.origin_city for m in members)]
+
+    back = [{**g, "routes": [{
+        "source": s or dest.name,
+        "links": train_links(s or dest.name, g["place"]),
+        "sncf_phrase": sncf_phrase(s or dest.name, g["place"], "", return_day),
+    } for s in targets]} for g in group(
+        m.return_city.strip() or m.origin_city for m in members)]
 
     return render(request, "trips/search.html", {
         "trip": trip, "dest": dest, "options": options, "chosen": chosen,
-        "lodging": lodging, "dated": dated, "adults": len(members), "trains": trains,
-        "sncf_url": SNCF_CONNECT_URL, "target": dest.nearest_station or dest.name,
+        "lodging": lodging, "dated": dated, "adults": len(members),
+        "outward": outward, "back": back, "sncf_url": SNCF_CONNECT_URL,
     })
