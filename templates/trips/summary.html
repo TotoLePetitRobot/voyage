@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Synthèse – {{ trip.name }}</h1>
+<h2>Les 3 meilleurs choix</h2>
+{% if podium %}
+<ol class="podium">
+  {% for p in podium %}
+  <li class="card">
+    <b>{{ p.destination.name }}</b>, du {{ p.period.start_date|date:"j F Y" }} au {{ p.period.end_date|date:"j F Y" }}
+    <br><small>Score {{ p.score }} sur {{ max_score }}{% if p.no %} · {{ p.no }} personne{{ p.no|pluralize }} {{ p.no|pluralize:"a,ont" }} dit Non{% endif %}</small>
+  </li>
+  {% endfor %}
+</ol>
+<p><small>Score d’un couple = score de la destination + score de la période (Oui = 2, Peut-être = 1, Non = 0). À égalité : moins de « Non », puis plus de « Oui ».</small></p>
+{% else %}
+<p>Le classement apparaît dès qu’il y a au moins une destination, une période et un vote.</p>
+{% endif %}
 <p><small>Score : Oui = 2 points, Peut-être = 1, Non = 0.</small></p>
 
 <h2>Destinations</h2>

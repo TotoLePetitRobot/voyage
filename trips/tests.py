@@ -1,11 +1,13 @@
 import random
+import re
 import sqlite3
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone as djtz
@@ -14,7 +16,10 @@ from .backup import backup_sqlite
 from .importers import parse_destinations
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
-                     MealItem, Member, SolidarityPref, Trip, Leg)
+                     MealItem, Member, SolidarityPref, Trip, Leg, DateVote,
+                     DestVote, Lodging)
+from .periods import parse_periods
+from .ranking import summarize, top_pairs
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .shopping import aggregate, format_line, parse_line
 from .views import trip_balances, trip_calc
@@ -500,8 +505,9 @@ class RoleTests(TestCase):
         self.assertFalse(self.simple.can_edit_meal(by_orga))
 
     def test_assignable_roles(self):
-        self.assertEqual(self.orga.assignable_roles(), {"coorganizer", "chef"})
-        self.assertEqual(self.coorga.assignable_roles(), {"chef"})
+        every = {"coorganizer", "chef", "accountant", "agent"}
+        self.assertEqual(self.orga.assignable_roles(), every)
+        self.assertEqual(self.coorga.assignable_roles(), every - {"coorganizer"})
         self.assertEqual(self.chef.assignable_roles(), set())
         self.assertEqual(self.simple.assignable_roles(), set())
 
@@ -857,3 +863,286 @@ class HiddenExpenseTests(TestCase):
     def test_outsider_gets_404(self):
         self.client.force_login(self.users["stranger"])
         self.assertEqual(self.client.get(reverse("budget", args=[self.trip.pk])).status_code, 404)
+
+class PeriodsParsingTests(SimpleTestCase):
+    TODAY = date(2026, 11, 20)
+
+    def test_valid_file(self):
+        periods, errors = parse_periods(
+            "début;fin\n06/02/2027;13/02/2027\n13/02/2027;20/02/2027\n", self.TODAY)
+        self.assertEqual(periods, [(date(2027, 2, 6), date(2027, 2, 13)),
+                                   (date(2027, 2, 13), date(2027, 2, 20))])
+        self.assertEqual(errors, [])
+
+    def test_variants_are_accepted(self):
+        periods, _ = parse_periods("Début,Fin\r\n6/2/2027,13/2/2027\r\n"
+                                   "2027-03-01,2027-03-05\r\n", self.TODAY)
+        self.assertEqual(periods, [(date(2027, 2, 6), date(2027, 2, 13)),
+                                   (date(2027, 3, 1), date(2027, 3, 5))])
+        self.assertEqual(len(parse_periods("\ufeffdébut;fin\n06/02/2027;13/02/2027",
+                                           self.TODAY)[0]), 1)
+
+    def test_errors_duplicates_and_blank_lines(self):
+        text = ("début;fin\n06/02/2027;13/02/2027\n\n06/02/2027;13/02/2027\n"
+                "13/02/2027;06/02/2027\n01/01/2020;05/01/2020\nabc;13/02/2027\n06/02/2027\n"
+                "01/02/2027;15/05/2027\n01/01/2031;05/01/2031\n")
+        periods, errors = parse_periods(text, self.TODAY)
+        self.assertEqual(periods, [(date(2027, 2, 6), date(2027, 2, 13))])
+        self.assertEqual(len(errors), 6)
+        self.assertTrue(errors[0].startswith("Ligne 5 :"))
+        self.assertIn("Ligne 8 : colonnes manquantes.", errors)
+
+    def test_bad_files_are_rejected(self):
+        for bad in ["", "   \n", "a;b\n1;2", "nom;gare\nx;y"]:
+            with self.assertRaises(ValueError):
+                parse_periods(bad, self.TODAY)
+        with self.assertRaises(ValueError):
+            parse_periods("début;fin\n" + "06/02/2027;13/02/2027\n" * 101, self.TODAY)
+
+
+class RankingTests(SimpleTestCase):
+    def test_top_pairs(self):
+        dv = [(10, 1, 2), (10, 2, 2), (10, 3, 1), (20, 1, 2), (20, 2, 2), (20, 3, 0)]
+        tv = [(100, 1, 2), (100, 2, 0), (100, 3, 2), (200, 1, 2), (200, 2, 2), (200, 3, 1)]
+        dest, dates = summarize([10, 20], dv), summarize([100, 200], tv)
+        self.assertEqual(dest[10]["total"], 5)
+        self.assertEqual(dest[20]["no_members"], {3})
+        out = top_pairs(dest, dates, [10, 20], [100, 200], 3)
+        self.assertEqual([(p["dest"], p["date"]) for p in out],
+                         [(10, 200), (10, 100), (20, 200)])
+        self.assertEqual(out[0]["score"], 10)
+        self.assertEqual((out[1]["score"], out[1]["no"]), (9, 1))
+
+    def test_fewer_no_votes_win_ties(self):
+        dest = summarize([1, 2], [(1, 1, 2), (1, 2, 0), (2, 1, 1), (2, 2, 1)])
+        out = top_pairs(dest, summarize([9], []), [1, 2], [9], 2)
+        self.assertEqual([p["dest"] for p in out], [2, 1])
+
+    def test_empty_inputs(self):
+        self.assertEqual(top_pairs({}, {}, [], [], 3), [])
+        self.assertEqual(summarize([1], [(5, 1, 2)])[1]["total"], 0)
+
+
+class PodiumViewTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.users = [U.objects.create_user(n, password="pw-test-123") for n in ("a", "b", "c")]
+        self.trip = Trip.objects.create(name="Test")
+        self.members = [Member.objects.create(trip=self.trip, display_name=n.title(), user=u)
+                        for n, u in zip("abc", self.users)]
+        self.alpes = Destination.objects.create(trip=self.trip, name="Alpes")
+        self.bretagne = Destination.objects.create(trip=self.trip, name="Bretagne")
+        self.mars = DateOption.objects.create(trip=self.trip, start_date=date(2027, 3, 1),
+                                              end_date=date(2027, 3, 8))
+        self.avril = DateOption.objects.create(trip=self.trip, start_date=date(2027, 4, 1),
+                                               end_date=date(2027, 4, 8))
+        self.url = reverse("trip_summary", args=[self.trip.pk])
+
+    def test_no_votes_no_podium(self):
+        self.client.force_login(self.users[0])
+        self.assertContains(self.client.get(self.url), "Le classement apparaît")
+
+    def test_podium_lists_best_pairs_first(self):
+        for member, (a, b) in zip(self.members, [(2, 2), (2, 2), (1, 0)]):
+            DestVote.objects.create(member=member, destination=self.alpes, score=a)
+            DestVote.objects.create(member=member, destination=self.bretagne, score=b)
+        for member, (m, v) in zip(self.members, [(2, 2), (0, 2), (2, 1)]):
+            DateVote.objects.create(member=member, date_option=self.mars, score=m)
+            DateVote.objects.create(member=member, date_option=self.avril, score=v)
+        self.client.force_login(self.users[0])
+        html = self.client.get(self.url).content.decode()
+        podium = html.split('<ol class="podium">')[1].split("</ol>")[0]
+        found = re.findall(r"<b>(.*?)</b>, du (.*?) au", podium)
+        self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Alpes", "1 mars 2027"),
+                                 ("Bretagne", "1 avril 2027")])
+
+
+class DateImportTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.user = U.objects.create_user("anna", password="pw-test-123")
+        self.stranger = U.objects.create_user("zoe", password="pw-test-123")
+        self.trip = Trip.objects.create(name="Test")
+        self.member = Member.objects.create(trip=self.trip, display_name="Anna", user=self.user)
+        self.url = reverse("date_import", args=[self.trip.pk])
+        base = djtz.localdate() + timedelta(days=30)
+        self.d1, self.d2, self.d3 = base, base + timedelta(days=7), base + timedelta(days=14)
+
+    @staticmethod
+    def fmt(d):
+        return d.strftime("%d/%m/%Y")
+
+    def upload(self, text, encoding="utf-8", **extra):
+        f = SimpleUploadedFile("dates.csv", text.encode(encoding), content_type="text/csv")
+        return self.client.post(self.url, {"file": f}, **extra)
+
+    def test_import_creates_periods(self):
+        self.client.force_login(self.user)
+        r = self.upload(f"début;fin\n{self.fmt(self.d1)};{self.fmt(self.d2)}\n"
+                        f"{self.fmt(self.d2)};{self.fmt(self.d3)}\n")
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(DateOption.objects.count(), 2)
+        self.assertEqual(DateOption.objects.first().proposed_by, self.member)
+
+    def test_bad_lines_and_duplicates_are_reported(self):
+        DateOption.objects.create(trip=self.trip, start_date=self.d1, end_date=self.d2)
+        self.client.force_login(self.user)
+        r = self.upload(f"début;fin\n{self.fmt(self.d1)};{self.fmt(self.d2)}\n"
+                        f"{self.fmt(self.d2)};{self.fmt(self.d3)}\nabc;def\n", follow=True)
+        self.assertEqual(DateOption.objects.count(), 2)
+        self.assertContains(r, "1 période(s) importée(s), 1 déjà présente(s)")
+        self.assertContains(r, "Ligne 4")
+
+    def test_bad_header_is_rejected(self):
+        self.client.force_login(self.user)
+        r = self.upload("nom;gare\nx;y\n")
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "En-tête attendu")
+        self.assertEqual(DateOption.objects.count(), 0)
+
+    def test_limit_of_26_periods(self):
+        base = self.d1
+        for i in range(25):
+            DateOption.objects.create(trip=self.trip, start_date=base + timedelta(days=i),
+                                      end_date=base + timedelta(days=i + 1))
+        self.client.force_login(self.user)
+        far = self.d3 + timedelta(days=40)
+        r = self.upload(f"début;fin\n{self.fmt(far)};{self.fmt(far + timedelta(days=2))}\n"
+                        f"{self.fmt(far + timedelta(days=5))};{self.fmt(far + timedelta(days=6))}\n",
+                        follow=True)
+        self.assertEqual(DateOption.objects.count(), 26)
+        self.assertContains(r, "non importée(s)")
+
+    def test_windows_encoding(self):
+        self.client.force_login(self.user)
+        r = self.upload(f"début;fin\n{self.fmt(self.d1)};{self.fmt(self.d2)}\n", encoding="cp1252")
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(DateOption.objects.count(), 1)
+
+    def test_outsider_gets_404(self):
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+
+class LodgingTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "coorga", "agent", "owner", "simple", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        self.m = {}
+        for n in names[:-1]:
+            roles = {"coorga": ["coorganizer"], "agent": ["agent"]}.get(n, [])
+            self.m[n] = Member.objects.create(trip=self.trip, display_name=n.title(),
+                                              user=self.users[n], roles=roles,
+                                              is_organizer=(n == "orga"))
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamrousse")
+        self.lodging = Lodging.objects.create(destination=self.dest, name="Chalet Mélèze",
+                                              proposed_by=self.m["owner"])
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def test_any_member_can_propose_with_only_a_name(self):
+        self.as_user("simple")
+        r = self.client.post(reverse("lodging_add", args=[self.dest.pk]), {"name": "Studio"})
+        self.assertEqual(r.status_code, 302)
+        studio = Lodging.objects.get(name="Studio")
+        self.assertEqual(studio.proposed_by, self.m["simple"])
+        self.assertIsNone(studio.price)
+
+    def test_unsafe_url_schemes_are_rejected(self):
+        self.as_user("simple")
+        for bad in ("javascript:alert(1)", "ftp://exemple.fr/chalet"):
+            r = self.client.post(reverse("lodging_add", args=[self.dest.pk]),
+                                 {"name": "Piège", "url": bad})
+            self.assertEqual(r.status_code, 200, bad)
+        self.assertFalse(Lodging.objects.filter(name="Piège").exists())
+
+    def test_end_before_start_is_rejected(self):
+        self.as_user("owner")
+        r = self.client.post(reverse("lodging_edit", args=[self.lodging.pk]), {
+            "name": "Chalet", "start_date": "2027-02-13", "end_date": "2027-02-06"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_who_can_edit_and_delete(self):
+        url = reverse("lodging_edit", args=[self.lodging.pk])
+        for name in ("owner", "agent", "orga", "coorga"):
+            self.as_user(name)
+            self.assertEqual(self.client.get(url).status_code, 200, name)
+        self.as_user("simple")
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(self.client.post(reverse("lodging_delete",
+                                                   args=[self.lodging.pk])).status_code, 403)
+        self.as_user("agent")
+        self.client.post(reverse("lodging_delete", args=[self.lodging.pk]))
+        self.assertFalse(Lodging.objects.filter(pk=self.lodging.pk).exists())
+
+    def test_fields_can_be_filled_in_later(self):
+        self.as_user("agent")
+        self.client.post(reverse("lodging_edit", args=[self.lodging.pk]), {
+            "name": "Chalet Mélèze", "url": "https://exemple.fr/chalet", "price": "1200",
+            "capacity": "6", "notes": "200 m des remontées", "start_date": "2027-02-06",
+            "end_date": "2027-02-13"})
+        self.lodging.refresh_from_db()
+        self.assertEqual(self.lodging.price, Decimal("1200"))
+        self.assertEqual(self.lodging.capacity, 6)
+
+    def test_page_shows_price_per_person_and_capacity_warning(self):
+        self.lodging.price, self.lodging.capacity = Decimal("1000"), 3
+        self.lodging.save()
+        self.as_user("simple")
+        r = self.client.get(reverse("lodgings", args=[self.trip.pk]))
+        self.assertContains(r, "200,00")        # 1000 € pour 5 participants
+        self.assertContains(r, "moins que les 5 participants")
+
+    def test_outsider_gets_404(self):
+        self.as_user("stranger")
+        self.assertEqual(self.client.get(reverse("lodgings", args=[self.trip.pk])).status_code, 404)
+        self.assertEqual(self.client.get(reverse("lodging_edit", args=[self.lodging.pk])).status_code, 404)
+
+
+class AccountantAndAgentRoleTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "coorga", "accountant", "payer", "target")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        self.m = {}
+        for n in names:
+            roles = {"coorga": ["coorganizer"], "accountant": ["accountant"]}.get(n, [])
+            self.m[n] = Member.objects.create(trip=self.trip, display_name=n.title(),
+                                              user=self.users[n], roles=roles,
+                                              is_organizer=(n == "orga"))
+
+    def expense(self, hidden=()):
+        e = Expense.objects.create(trip=self.trip, paid_by=self.m["payer"],
+                                   created_by=self.m["payer"], label="x",
+                                   amount=Decimal("10"), split_mode="custom")
+        e.hidden_from.set([self.m[h] for h in hidden])
+        return e
+
+    def test_accountant_can_edit_and_delete_visible_expenses(self):
+        e = self.expense()
+        self.client.force_login(self.users["accountant"])
+        self.assertEqual(self.client.get(reverse("expense_edit", args=[e.pk])).status_code, 200)
+        self.client.post(reverse("expense_delete", args=[e.pk]))
+        self.assertFalse(Expense.objects.filter(pk=e.pk).exists())
+
+    def test_accountant_cannot_touch_expenses_hidden_from_them(self):
+        e = self.expense(hidden=["accountant"])
+        self.client.force_login(self.users["accountant"])
+        self.assertEqual(self.client.get(reverse("expense_edit", args=[e.pk])).status_code, 404)
+        self.assertEqual(self.client.post(reverse("expense_delete", args=[e.pk])).status_code, 404)
+        self.assertTrue(Expense.objects.filter(pk=e.pk).exists())
+
+    def test_accountant_cannot_manage_roles(self):
+        self.client.force_login(self.users["accountant"])
+        self.assertEqual(self.client.get(reverse("roles", args=[self.trip.pk])).status_code, 403)
+
+    def test_coorganizer_assigns_new_roles_but_not_coorganizer(self):
+        self.client.force_login(self.users["coorga"])
+        self.client.post(reverse("roles", args=[self.trip.pk]), {
+            f"roles_{self.m['target'].pk}": ["accountant", "agent", "coorganizer"]})
+        self.m["target"].refresh_from_db()
+        self.assertEqual(sorted(self.m["target"].roles), ["accountant", "agent"])

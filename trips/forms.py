@@ -3,9 +3,11 @@ from decimal import Decimal
 
 from django import forms
 from django.utils import timezone
+from django.core.validators import URLValidator
 
 from .models import (CATEGORY_CHOICES, DateOption, Destination, Expense, Meal, 
-                     Member, Trip, Leg)
+                     Member, Trip, Leg, Lodging)
+from .periods import check_period
 from .settlement import equal_split, to_cents
 from .shopping import format_line, parse_line
 
@@ -117,15 +119,9 @@ class DateOptionForm(forms.ModelForm):
         cleaned = super().clean()
         start, end = cleaned.get("start_date"), cleaned.get("end_date")
         if start and end:
-            today = timezone.localdate()
-            if end < start:
-                raise forms.ValidationError("La date de départ doit être après l’arrivée.")
-            if (end - start).days > 60:
-                raise forms.ValidationError("Une période ne peut pas dépasser 60 nuits.")
-            if start < today:
-                raise forms.ValidationError("La période ne peut pas commencer dans le passé.")
-            if start > today + timedelta(days=730):
-                raise forms.ValidationError("Choisissez une date dans les deux prochaines années.")
+            problem = check_period(start, end, timezone.localdate())
+            if problem:
+                raise forms.ValidationError(problem)
         return cleaned
 
 class ExpenseForm(forms.Form):
@@ -340,4 +336,36 @@ class LegForm(forms.ModelForm):
             if passengers:
                 self.add_error("transport", "Retirez d’abord les passagers pour changer "
                                             "de type de transport.")
+        return cleaned
+
+_HTTP_URL = URLValidator(schemes=["http", "https"])
+
+
+class LodgingForm(forms.ModelForm):
+    class Meta:
+        model = Lodging
+        fields = ["name", "url", "start_date", "end_date", "price", "capacity", "notes"]
+        widgets = {
+            "start_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "end_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "notes": forms.Textarea(attrs={"rows": 4}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["price"].widget.attrs.update(step="0.01", min="0")
+        self.fields["notes"].help_text = (
+            "Par exemple : distance aux remontées mécaniques, étage, parking…")
+
+    def clean_url(self):
+        url = self.cleaned_data["url"].strip()
+        if url:
+            _HTTP_URL(url)
+        return url
+
+    def clean(self):
+        cleaned = super().clean()
+        start, end = cleaned.get("start_date"), cleaned.get("end_date")
+        if start and end and end < start:
+            self.add_error("end_date", "La fin doit être après le début.")
         return cleaned

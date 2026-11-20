@@ -16,13 +16,15 @@ from django.views.decorators.http import require_POST
 from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
                     MealForm, MemberForm, PseudoForm, SolidarityForm, TripForm,
-                    LegForm)
+                    LegForm, LodgingForm)
 from .importers import parse_destinations
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
 from .middleware import PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
-                     Trip, Leg, DIRECTION_CHOICES, ROLE_CHOICES)
+                     Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES)
+from .periods import parse_periods
+from .ranking import summarize, top_pairs
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
 from .shopping import aggregate
@@ -256,6 +258,8 @@ def trip_summary(request, pk):
         "anon_stats": anon_stats,
         "missing_budget": sum(1 for m in members if m.budget is None),
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
+        "podium": build_podium(trip),
+        "max_score": 4 * len(members),
     })
 
 def _build_layer(key, expenses, ids, pools, caps, extras):
@@ -328,7 +332,7 @@ def budget(request, pk):
         key = frozenset(h.pk for h in e.hidden_from.all())
         if me.pk in key:
             continue  # une dépense cachée à ce membre n'est jamais transmise au gabarit
-        e.can_edit = me.can_manage or e.created_by_id == me.pk
+        e.can_edit = me.can_edit_expense(e)
         by_layer.setdefault(key, []).append(e)
 
     shown = []
@@ -402,7 +406,7 @@ def expense_edit(request, expense_pk):
         pk=expense_pk, trip__members__user=request.user)
     trip = expense.trip
     me = trip.members.get(user=request.user)
-    if expense.is_transfer or not (me.can_manage or expense.created_by_id == me.pk):
+    if expense.is_transfer or not me.can_edit_expense(expense):
         raise PermissionDenied
     hidden = list(expense.hidden_from.all())
     shares = {s.member_id: s.amount for s in expense.shares.all()}
@@ -429,7 +433,7 @@ def expense_delete(request, expense_pk):
         Expense.objects.exclude(hidden_from__user=request.user),
         pk=expense_pk, trip__members__user=request.user)
     me = expense.trip.members.get(user=request.user)
-    if not (me.can_manage or expense.created_by_id == me.pk):
+    if not me.can_edit_expense(expense):
         raise PermissionDenied
     trip_pk = expense.trip_id
     expense.delete()
@@ -779,3 +783,128 @@ def leg_remove(request, leg_pk):
     if member_id is not None:
         leg.passengers.remove(*leg.passengers.filter(pk=member_id))
     return redirect("legs", pk=trip.pk)
+
+def _decode_csv(raw):
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
+
+
+def build_podium(trip, limit=3):
+    destinations = list(trip.destinations.all())
+    dates = list(trip.date_options.all())
+    if not destinations or not dates:
+        return []
+    dest_votes = list(DestVote.objects.filter(destination__trip=trip)
+                      .values_list("destination_id", "member_id", "score"))
+    date_votes = list(DateVote.objects.filter(date_option__trip=trip)
+                      .values_list("date_option_id", "member_id", "score"))
+    if not dest_votes and not date_votes:
+        return []
+    dest_order, date_order = [d.pk for d in destinations], [o.pk for o in dates]
+    ranked = top_pairs(summarize(dest_order, dest_votes), summarize(date_order, date_votes),
+                       dest_order, date_order, limit)
+    by_dest = {d.pk: d for d in destinations}
+    by_date = {o.pk: o for o in dates}
+    return [{"rank": n, "destination": by_dest[p["dest"]], "period": by_date[p["date"]],
+             "score": p["score"], "no": p["no"]} for n, p in enumerate(ranked, 1)]
+
+
+@login_required
+def date_import(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    form = ImportForm(request.POST or None, request.FILES or None)
+    if request.method == "POST" and form.is_valid():
+        text = _decode_csv(form.cleaned_data["file"].read())
+        try:
+            periods, errors = parse_periods(text, timezone.localdate())
+        except ValueError as error:
+            form.add_error("file", str(error))
+        else:
+            existing = set(trip.date_options.values_list("start_date", "end_date"))
+            new = [p for p in periods if p not in existing]
+            duplicates = len(periods) - len(new)
+            room = max(MAX_DATE_OPTIONS - len(existing), 0)
+            kept, dropped = new[:room], new[room:]
+            DateOption.objects.bulk_create([
+                DateOption(trip=trip, start_date=s, end_date=e, proposed_by=me)
+                for s, e in kept])
+            summary = f"{len(kept)} période(s) importée(s)"
+            if duplicates:
+                summary += f", {duplicates} déjà présente(s)"
+            messages.success(request, summary + ".")
+            if dropped:
+                messages.warning(request, f"{len(dropped)} période(s) non importée(s) : "
+                                          f"maximum {MAX_DATE_OPTIONS} périodes par voyage.")
+            for line in errors[:8]:
+                messages.warning(request, line)
+            if len(errors) > 8:
+                messages.warning(request, f"… et {len(errors) - 8} autre(s) ligne(s) ignorée(s).")
+            return redirect("date_list", pk=trip.pk)
+    return render(request, "trips/dates_import.html", {"form": form, "trip": trip})
+
+
+MAX_LODGINGS_PER_DESTINATION = 30
+
+
+@login_required
+def lodgings(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    count = trip.members.count()
+    sections = []
+    for destination in trip.destinations.prefetch_related("lodgings__proposed_by"):
+        items = list(destination.lodgings.all())
+        for item in items:
+            item.can_edit = me.can_edit_lodging(item)
+            item.per_person = ((item.price / count).quantize(Decimal("0.01"))
+                               if item.price is not None and count else None)
+            item.too_small = item.capacity is not None and item.capacity < count
+        sections.append({"destination": destination, "lodgings": items})
+    return render(request, "trips/lodgings.html",
+                  {"trip": trip, "sections": sections, "members_count": count})
+
+
+@login_required
+def lodging_add(request, dest_pk):
+    destination = get_object_or_404(Destination, pk=dest_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, destination.trip_id)
+    if destination.lodgings.count() >= MAX_LODGINGS_PER_DESTINATION:
+        messages.error(request, f"Maximum {MAX_LODGINGS_PER_DESTINATION} logements par destination.")
+        return redirect("lodgings", pk=trip.pk)
+    form = LodgingForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        lodging = form.save(commit=False)
+        lodging.destination, lodging.proposed_by = destination, me
+        lodging.save()
+        return redirect("lodgings", pk=trip.pk)
+    return render(request, "trips/lodging_form.html", {
+        "form": form, "trip": trip, "title": f"Proposer un logement : {destination.name}"})
+
+
+def _lodging_for_member(request, lodging_pk):
+    lodging = get_object_or_404(Lodging, pk=lodging_pk,
+                                destination__trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, lodging.destination.trip_id)
+    if not me.can_edit_lodging(lodging):
+        raise PermissionDenied
+    return lodging, trip
+
+
+@login_required
+def lodging_edit(request, lodging_pk):
+    lodging, trip = _lodging_for_member(request, lodging_pk)
+    form = LodgingForm(request.POST or None, instance=lodging)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("lodgings", pk=trip.pk)
+    return render(request, "trips/lodging_form.html",
+                  {"form": form, "trip": trip, "title": f"Modifier : {lodging.name}"})
+
+
+@login_required
+@require_POST
+def lodging_delete(request, lodging_pk):
+    lodging, trip = _lodging_for_member(request, lodging_pk)
+    lodging.delete()
+    return redirect("lodgings", pk=trip.pk)

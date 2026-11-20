@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Logements – {{ trip.name }}</h1>
+<p>Proposez des logements pour chaque destination. Seul le nom est obligatoire : tous les autres champs peuvent être remplis plus tard.</p>
+
+{% for section in sections %}
+  <h2>{{ section.destination.name }}</h2>
+  {% for l in section.lodgings %}
+    <div class="card">
+      <h3>{% if l.url %}<a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a>{% else %}{{ l.name }}{% endif %}</h3>
+      <dl>
+        {% if l.start_date or l.end_date %}
+          <dt>Dates</dt>
+          <dd>{% if l.start_date %}du {{ l.start_date|date:"j F Y" }}{% endif %}{% if l.end_date %} au {{ l.end_date|date:"j F Y" }}{% endif %}</dd>
+        {% endif %}
+        {% if l.price is not None %}
+          <dt>Prix</dt>
+          <dd>{{ l.price|floatformat:2 }} € le séjour{% if l.per_person is not None %}, environ {{ l.per_person|floatformat:2 }} € par personne pour {{ members_count }} participant{{ members_count|pluralize }}{% endif %}</dd>
+        {% endif %}
+        {% if l.capacity %}
+          <dt>Places</dt>
+          <dd>{{ l.capacity }}{% if l.too_small %} <span class="warn">(moins que les {{ members_count }} participants)</span>{% endif %}</dd>
+        {% endif %}
+      </dl>
+      {% if l.notes %}<p>{{ l.notes|linebreaksbr }}</p>{% endif %}
+      {% if l.proposed_by %}<small>Proposé par {{ l.proposed_by.label }}</small>{% endif %}
+      {% if l.can_edit %}
+        <p><a href="{% url 'lodging_edit' l.pk %}">Modifier</a>
+        <form method="post" action="{% url 'lodging_delete' l.pk %}" style="display:inline"
+              onsubmit="return confirm('Supprimer ce logement ?')">{% csrf_token %}<button>Supprimer</button></form></p>
+      {% endif %}
+    </div>
+  {% empty %}
+    <p>Aucun logement proposé pour l’instant.</p>
+  {% endfor %}
+  <p><a href="{% url 'lodging_add' section.destination.pk %}">Proposer un logement pour {{ section.destination.name }}</a></p>
+{% empty %}
+  <p>Ajoutez d’abord une destination dans l’onglet « Voyage ».</p>
+{% endfor %}
+{% endblock %}

@@ -35,4 +35,9 @@ urlpatterns = [
     path("trajets/<int:leg_pk>/s-ajouter/", views.leg_join, name="leg_join"),
     path("trajets/<int:leg_pk>/quitter/", views.leg_leave, name="leg_leave"),
     path("trajets/<int:leg_pk>/retirer/", views.leg_remove, name="leg_remove"),
+    path("voyages/<int:pk>/dates/import/", views.date_import, name="date_import"),
+    path("voyages/<int:pk>/logements/", views.lodgings, name="lodgings"),
+    path("destinations/<int:dest_pk>/logements/nouveau/", views.lodging_add, name="lodging_add"),
+    path("logements/<int:lodging_pk>/modifier/", views.lodging_edit, name="lodging_edit"),
+    path("logements/<int:lodging_pk>/supprimer/", views.lodging_delete, name="lodging_delete"),
 ]

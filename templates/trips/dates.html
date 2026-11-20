@@ -21,5 +21,6 @@
 
 <h2>Proposer une période</h2>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button>Ajouter</button></form>
+<p><a href="{% url 'date_import' trip.pk %}">Importer plusieurs périodes depuis un fichier CSV</a></p>
 <p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
 {% endblock %}

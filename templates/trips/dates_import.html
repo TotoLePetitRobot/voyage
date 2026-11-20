@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Importer des périodes</h1>
+<p>Fichier CSV avec une ligne d’en-tête <code>début;fin</code>, puis une période par ligne au format <code>jj/mm/aaaa</code> :</p>
+<pre>début;fin
+06/02/2027;13/02/2027
+13/02/2027;20/02/2027</pre>
+<p><small>Les lignes invalides sont ignorées et listées, les périodes déjà présentes aussi. Une période doit commencer aujourd’hui ou plus tard et durer 60 nuits au plus. Un voyage compte 26 périodes au maximum. Depuis Excel : « Enregistrer sous » puis « CSV UTF-8 ».</small></p>
+<form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button>Importer</button></form>
+<p><a href="{% url 'date_list' trip.pk %}">Retour aux périodes</a></p>
+{% endblock %}

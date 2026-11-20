@@ -9,7 +9,13 @@ from .shopping import format_line
 
 ROLE_COORGANIZER = "coorganizer"
 ROLE_CHEF = "chef"
-ROLE_CHOICES = [(ROLE_COORGANIZER, "Co-organisateur"), (ROLE_CHEF, "Chef cuistot")]
+ROLE_ACCOUNTANT = "accountant"
+ROLE_AGENT = "agent"
+ROLE_CHOICES = [(ROLE_COORGANIZER, "Co-organisateur"), 
+                (ROLE_CHEF, "Chef cuistot"),
+                (ROLE_ACCOUNTANT, "Expert-comptable"),
+                (ROLE_AGENT, "Agent immobilier"),
+]
 ROLE_LABELS = dict(ROLE_CHOICES)
 
 def make_token():
@@ -64,6 +70,20 @@ class Member(models.Model):
     @property
     def is_chef(self):
         return ROLE_CHEF in self.roles
+
+    @property
+    def is_accountant(self):
+        return ROLE_ACCOUNTANT in self.roles
+
+    @property
+    def is_agent(self):
+        return ROLE_AGENT in self.roles
+
+    def can_edit_expense(self, expense):
+        return self.can_manage or self.is_accountant or expense.created_by_id == self.pk
+
+    def can_edit_lodging(self, lodging):
+        return self.can_manage or self.is_agent or lodging.proposed_by_id == self.pk
 
     @property
     def role_labels(self):
@@ -299,6 +319,29 @@ class Leg(models.Model):
         if not self.is_car or self.seats is None:
             return None
         return max(self.seats - len(self.passengers.all()), 0)
+
+    def __str__(self):
+        return self.name
+
+class Lodging(models.Model):
+    destination = models.ForeignKey(Destination, on_delete=models.CASCADE,
+                                    related_name="lodgings")
+    name = models.CharField("Nom", max_length=120)
+    url = models.URLField("Lien web", max_length=300, blank=True)
+    start_date = models.DateField("Arrivée", null=True, blank=True)
+    end_date = models.DateField("Départ", null=True, blank=True)
+    price = models.DecimalField("Prix total du séjour (€)", max_digits=9, decimal_places=2,
+                                null=True, blank=True, validators=[MinValueValidator(0)])
+    capacity = models.PositiveSmallIntegerField(
+        "Nombre de places", null=True, blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(100)])
+    notes = models.TextField("Notes", blank=True)
+    proposed_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="proposed_lodgings")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
 
     def __str__(self):
         return self.name
