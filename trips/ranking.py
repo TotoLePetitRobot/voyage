@@ -3,7 +3,7 @@ def summarize(item_ids, votes):
     Retourne, par élément, le total, les décomptes et l'ensemble des membres ayant dit Non."""
     stats = {i: {"total": 0, "yes": 0, "maybe": 0, "no": 0, "no_members": set()}
              for i in item_ids}
-    for item, member, score in votes:
+    for member, item, score in votes:
         entry = stats.get(item)
         if entry is None:
             continue

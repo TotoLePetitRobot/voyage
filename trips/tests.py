@@ -928,7 +928,8 @@ class RankingTests(SimpleTestCase):
 
     def test_empty_inputs(self):
         self.assertEqual(top_pairs([], [], [], [], 3), [])
-        self.assertEqual(summarize([1], [(5, 1, 2)])[1]["total"], 0)
+        self.assertEqual(summarize([1], [(5, 1, 2)])[1]["total"], 2)
+        self.assertEqual(summarize([1], [(1, 9, 2)])[1]["total"], 0)  # élément inconnu ignoré
 
 
 class PodiumViewTests(TestCase):
@@ -961,8 +962,8 @@ class PodiumViewTests(TestCase):
         html = self.client.get(self.url).content.decode()
         podium = html.split('<ol class="podium">')[1].split("</ol>")[0]
         found = re.findall(r"<b>(.*?)</b>, du (.*?) au", podium)
-        self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Alpes", "1 mars 2027"),
-                                 ("Bretagne", "1 mars 2027")])
+        self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Bretagne", "1 avril 2027"),
+                                 ("Alpes", "1 mars 2027")])
 
     def test_pair_score_uses_min_per_voter(self):
         """Le Non de b sur Bretagne ne bloque pas Alpes pour b, mais écrase
@@ -977,9 +978,8 @@ class PodiumViewTests(TestCase):
         html = self.client.get(self.url).content.decode()
         podium = html.split('<ol class="podium">')[1].split("</ol>")[0]
         found = re.findall(r"<b>(.*?)</b>, du (.*?) au", podium)
-        # Alpes+Mars : 2+0+2 = 4. Bretagne+Mars : 2+0+2 = 4. Alpes+Avril : 6.
-        self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Alpes", "1 mars 2027"),
-                                 ("Bretagne", "1 mars 2027")])
+        self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Bretagne", "1 avril 2027"),
+                                 ("Alpes", "1 mars 2027")])
 
 
 class DateImportTests(TestCase):

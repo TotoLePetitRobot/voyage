@@ -259,7 +259,7 @@ def trip_summary(request, pk):
         "missing_budget": sum(1 for m in members if m.budget is None),
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
         "podium": build_podium(trip),
-        "max_score": 4 * len(members),
+        "max_score": 2 * len(members),
     })
 
 def _build_layer(key, expenses, ids, pools, caps, extras):
@@ -794,13 +794,15 @@ def _decode_csv(raw):
 def build_podium(trip, limit=3):
     destinations = list(trip.destinations.all())
     dates = list(trip.date_options.all())
-    dest_votes = DestVote.objects.filter(destination__trip=trip).values_list("destination_id", "member_id", "score")
-    date_votes = DateVote.objects.filter(date_option__trip=trip).values_list("date_option_id", "member_id", "score")
+    dest_votes = DestVote.objects.filter(destination__trip=trip).values_list("member_id", "destination_id", "score")
+    date_votes = DateVote.objects.filter(date_option__trip=trip).values_list("member_id", "date_option_id", "score")
     dest_order, date_order = [d.pk for d in destinations], [o.pk for o in dates]
     ranked = top_pairs(dest_votes, date_votes,
                        dest_order, date_order, limit)
     by_dest = {d.pk: d for d in destinations}
     by_date = {o.pk: o for o in dates}
+    if not ranked or all(p["score"] == 0 for p in ranked):
+        return []
     return [{"rank": n, "destination": by_dest[p["dest"]], "period": by_date[p["date"]],
              "score": p["score"], "no": p["no"]} for n, p in enumerate(ranked, 1)]
 

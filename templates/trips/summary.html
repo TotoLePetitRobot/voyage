@@ -11,7 +11,7 @@
   </li>
   {% endfor %}
 </ol>
-<p><small>Score d’un couple = score de la destination + score de la période (Oui = 2, Peut-être = 1, Non = 0). À égalité : moins de « Non », puis plus de « Oui ».</small></p>
+<p><small>Score d’un couple = score minimum de la destination et de la période (Oui = 2, Peut-être = 1, Non = 0). À égalité : moins de « Non », puis plus de « Oui ».</small></p>
 {% else %}
 <p>Le classement apparaît dès qu’il y a au moins une destination, une période et un vote.</p>
 {% endif %}
