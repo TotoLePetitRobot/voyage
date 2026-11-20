@@ -794,16 +794,10 @@ def _decode_csv(raw):
 def build_podium(trip, limit=3):
     destinations = list(trip.destinations.all())
     dates = list(trip.date_options.all())
-    if not destinations or not dates:
-        return []
-    dest_votes = list(DestVote.objects.filter(destination__trip=trip)
-                      .values_list("destination_id", "member_id", "score"))
-    date_votes = list(DateVote.objects.filter(date_option__trip=trip)
-                      .values_list("date_option_id", "member_id", "score"))
-    if not dest_votes and not date_votes:
-        return []
+    dest_votes = DestVote.objects.filter(destination__trip=trip).values_list("destination_id", "member_id", "score")
+    date_votes = DateVote.objects.filter(date_option__trip=trip).values_list("date_option_id", "member_id", "score")
     dest_order, date_order = [d.pk for d in destinations], [o.pk for o in dates]
-    ranked = top_pairs(summarize(dest_order, dest_votes), summarize(date_order, date_votes),
+    ranked = top_pairs(dest_votes, date_votes,
                        dest_order, date_order, limit)
     by_dest = {d.pk: d for d in destinations}
     by_date = {o.pk: o for o in dates}

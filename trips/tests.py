@@ -902,24 +902,32 @@ class PeriodsParsingTests(SimpleTestCase):
 
 class RankingTests(SimpleTestCase):
     def test_top_pairs(self):
-        dv = [(10, 1, 2), (10, 2, 2), (10, 3, 1), (20, 1, 2), (20, 2, 2), (20, 3, 0)]
-        tv = [(100, 1, 2), (100, 2, 0), (100, 3, 2), (200, 1, 2), (200, 2, 2), (200, 3, 1)]
-        dest, dates = summarize([10, 20], dv), summarize([100, 200], tv)
-        self.assertEqual(dest[10]["total"], 5)
-        self.assertEqual(dest[20]["no_members"], {3})
-        out = top_pairs(dest, dates, [10, 20], [100, 200], 3)
+        dv = [(1, 10, 2), (2, 10, 2), (3, 10, 1),
+              (1, 20, 2), (2, 20, 2), (3, 20, 0)]
+        tv = [(1, 100, 2), (2, 100, 0), (3, 100, 2),
+              (1, 200, 2), (2, 200, 2), (3, 200, 1)]
+        stats = summarize([10, 20], dv)
+        self.assertEqual(stats[10]["total"], 5)
+        self.assertEqual(stats[20]["no_members"], {3})
+        out = top_pairs(dv, tv, [10, 20], [100, 200], 3)
         self.assertEqual([(p["dest"], p["date"]) for p in out],
-                         [(10, 200), (10, 100), (20, 200)])
-        self.assertEqual(out[0]["score"], 10)
-        self.assertEqual((out[1]["score"], out[1]["no"]), (9, 1))
+                         [(10, 200), (20, 200), (10, 100)])
+        self.assertEqual(out[0]["score"], 5)
+        self.assertEqual((out[1]["score"], out[1]["no"]), (4, 1))
+        self.assertEqual((out[2]["score"], out[2]["no"]), (3, 1))
 
     def test_fewer_no_votes_win_ties(self):
-        dest = summarize([1, 2], [(1, 1, 2), (1, 2, 0), (2, 1, 1), (2, 2, 1)])
-        out = top_pairs(dest, summarize([9], []), [1, 2], [9], 2)
-        self.assertEqual([p["dest"] for p in out], [2, 1])
+        """Score combiné égal, mais la destination 1 a moins de Non combinés."""
+        dv = [(1, 1, 1), (2, 1, 2), (3, 1, 1),
+              (1, 2, 2), (2, 2, 0), (3, 2, 2)]
+        tv = [(1, 9, 2), (2, 9, 2), (3, 9, 2)]
+        out = top_pairs(dv, tv, [1, 2], [9], 2)
+        self.assertEqual([p["dest"] for p in out], [1, 2])
+        self.assertEqual(out[0]["score"], out[1]["score"])
+        self.assertEqual((out[0]["no"], out[1]["no"]), (0, 1))
 
     def test_empty_inputs(self):
-        self.assertEqual(top_pairs({}, {}, [], [], 3), [])
+        self.assertEqual(top_pairs([], [], [], [], 3), [])
         self.assertEqual(summarize([1], [(5, 1, 2)])[1]["total"], 0)
 
 
@@ -954,7 +962,24 @@ class PodiumViewTests(TestCase):
         podium = html.split('<ol class="podium">')[1].split("</ol>")[0]
         found = re.findall(r"<b>(.*?)</b>, du (.*?) au", podium)
         self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Alpes", "1 mars 2027"),
-                                 ("Bretagne", "1 avril 2027")])
+                                 ("Bretagne", "1 mars 2027")])
+
+    def test_pair_score_uses_min_per_voter(self):
+        """Le Non de b sur Bretagne ne bloque pas Alpes pour b, mais écrase
+        Bretagne à 0 pour lui, quel que soit son vote période."""
+        for member in self.members:
+            DestVote.objects.create(member=member, destination=self.alpes, score=2)
+            DestVote.objects.create(member=member, destination=self.bretagne, score=2)
+        for member, (m, v) in zip(self.members, [(2, 2), (0, 2), (2, 2)]):
+            DateVote.objects.create(member=member, date_option=self.mars, score=m)
+            DateVote.objects.create(member=member, date_option=self.avril, score=v)
+        self.client.force_login(self.users[0])
+        html = self.client.get(self.url).content.decode()
+        podium = html.split('<ol class="podium">')[1].split("</ol>")[0]
+        found = re.findall(r"<b>(.*?)</b>, du (.*?) au", podium)
+        # Alpes+Mars : 2+0+2 = 4. Bretagne+Mars : 2+0+2 = 4. Alpes+Avril : 6.
+        self.assertEqual(found, [("Alpes", "1 avril 2027"), ("Alpes", "1 mars 2027"),
+                                 ("Bretagne", "1 mars 2027")])
 
 
 class DateImportTests(TestCase):
