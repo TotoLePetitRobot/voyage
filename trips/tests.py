@@ -17,7 +17,7 @@ from .models import (DateOption, Destination, Expense, ExpenseShare, Meal,
                      MealItem, Member, SolidarityPref, Trip, Leg)
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .shopping import aggregate, format_line, parse_line
-from .views import trip_balances
+from .views import trip_balances, trip_calc
 
 
 class SettlementTests(SimpleTestCase):
@@ -704,3 +704,156 @@ class LegTests(TestCase):
         self.as_user("stranger")
         self.assertEqual(self.client.get(reverse("legs", args=[self.trip.pk])).status_code, 404)
         self.assertEqual(self.client.post(reverse("leg_join", args=[leg.pk])).status_code, 404)
+
+class HiddenExpenseTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "bob", "carl", "dana", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        self.m = {}
+        for n in names[:-1]:
+            self.m[n] = Member.objects.create(
+                trip=self.trip, display_name=n.title(), user=self.users[n],
+                is_organizer=(n == "orga"), roles=["coorganizer"] if n == "dana" else [])
+        # visible : carl paie 40 €, 10 € chacun
+        self.visible = self.expense("Courses", "40", "carl",
+                                    {"orga": "10", "bob": "10", "carl": "10", "dana": "10"})
+        # cadeau caché à orga (organisateur) : bob paie 87 €, 29 € chacun pour bob, carl, dana
+        self.gift = self.expense("Cadeau secret", "87", "bob",
+                                 {"bob": "29", "carl": "29", "dana": "29"}, hidden=["orga"])
+
+    def expense(self, label, amount, payer, shares, hidden=()):
+        e = Expense.objects.create(trip=self.trip, paid_by=self.m[payer],
+                                   created_by=self.m[payer], label=label,
+                                   amount=Decimal(amount), split_mode="custom")
+        for name, value in shares.items():
+            ExpenseShare.objects.create(expense=e, member=self.m[name], amount=Decimal(value))
+        e.hidden_from.set([self.m[h] for h in hidden])
+        return e
+
+    def budget_page(self, name):
+        self.client.force_login(self.users[name])
+        return self.client.get(reverse("budget", args=[self.trip.pk]))
+
+    def all_pks(self):
+        return [m.pk for m in self.m.values()]
+
+    def test_recipient_sees_nothing_even_as_organizer(self):
+        r = self.budget_page("orga")
+        self.assertContains(r, "40,00")
+        for text in ("Cadeau secret", "cachées à", "87,00", "29,00", "58,00"):
+            self.assertNotContains(r, text)
+
+    def test_recipient_with_coorganizer_role_sees_nothing(self):
+        self.expense("Surprise pour Dana", "63", "bob",
+                     {"bob": "21", "carl": "21", "orga": "21"}, hidden=["dana"])
+        r = self.budget_page("dana")
+        for text in ("Surprise pour Dana", "63,00", "21,00", "42,00"):
+            self.assertNotContains(r, text)
+        self.assertContains(r, "Cadeau secret")
+
+    def test_non_recipients_see_the_hidden_section(self):
+        r = self.budget_page("carl")
+        self.assertContains(r, "Cadeau secret")
+        self.assertContains(r, "cachées à Orga")
+        self.assertContains(r, "87,00")
+
+    def test_layers_are_separate(self):
+        b = self.m
+        _, layers = trip_calc(self.trip)
+        visible, hidden = layers
+        self.assertEqual(visible["balances"], {b["orga"].pk: -1000, b["bob"].pk: -1000,
+                                               b["carl"].pk: 3000, b["dana"].pk: -1000})
+        self.assertEqual(hidden["balances"][b["bob"].pk], 5800)
+        self.assertEqual(hidden["balances"][b["orga"].pk], 0)
+        self.assertEqual(hidden["transfers"], [(b["carl"].pk, b["bob"].pk, 2900),
+                                               (b["dana"].pk, b["bob"].pk, 2900)])
+        self.assertEqual(trip_balances(self.trip)[1], visible["balances"])
+
+    def test_recipient_cannot_open_edit_or_delete_a_hidden_expense(self):
+        self.client.force_login(self.users["orga"])
+        self.assertEqual(self.client.get(reverse("expense_edit", args=[self.gift.pk])).status_code, 404)
+        self.assertEqual(self.client.post(reverse("expense_delete", args=[self.gift.pk])).status_code, 404)
+        self.assertTrue(Expense.objects.filter(pk=self.gift.pk).exists())
+
+    def test_recipient_cannot_settle_the_hidden_layer(self):
+        b = self.m
+        self.client.force_login(self.users["orga"])
+        r = self.client.post(reverse("settle", args=[self.trip.pk]), {
+            "from_id": b["carl"].pk, "to_id": b["bob"].pk, "amount_cents": 2900,
+            "layer": str(b["orga"].pk)})
+        self.assertEqual(r.status_code, 404)
+        self.assertFalse(Expense.objects.filter(is_transfer=True).exists())
+
+    def test_hidden_transfer_stays_hidden_and_does_not_touch_the_visible_layer(self):
+        b = self.m
+        self.client.force_login(self.users["carl"])
+        data = {"from_id": b["carl"].pk, "to_id": b["bob"].pk, "amount_cents": 2900}
+        self.assertEqual(self.client.post(reverse("settle", args=[self.trip.pk]),
+                                          {**data, "layer": ""}).status_code, 404)
+        r = self.client.post(reverse("settle", args=[self.trip.pk]),
+                             {**data, "layer": str(b["orga"].pk)})
+        self.assertEqual(r.status_code, 302)
+        transfer = Expense.objects.get(is_transfer=True)
+        self.assertEqual([h.pk for h in transfer.hidden_from.all()], [b["orga"].pk])
+        _, layers = trip_calc(self.trip)
+        self.assertEqual(layers[1]["balances"][b["carl"].pk], 0)
+        self.assertEqual(layers[0]["balances"][b["carl"].pk], 3000)
+        self.assertNotContains(self.budget_page("orga"), "<b>Remboursement</b>")
+        self.assertContains(self.budget_page("carl"), "<b>Remboursement</b>")
+
+    def post_expense(self, as_user, **overrides):
+        self.client.force_login(self.users[as_user])
+        data = {"label": "Fleurs", "amount": "30.00", "category": "autre",
+                "date": "2027-02-06", "paid_by": self.m[as_user].pk, "split_mode": "equal",
+                "participants": self.all_pks(), "hidden_from": [self.m["orga"].pk]}
+        data.update(overrides)
+        return self.client.post(reverse("expense_add", args=[self.trip.pk]), data)
+
+    def test_creating_a_hidden_expense_excludes_the_recipient_automatically(self):
+        b = self.m
+        self.assertEqual(self.post_expense("bob").status_code, 302)
+        e = Expense.objects.get(label="Fleurs")
+        self.assertEqual([h.pk for h in e.hidden_from.all()], [b["orga"].pk])
+        self.assertEqual(sorted(s.member_id for s in e.shares.all()),
+                         sorted([b["bob"].pk, b["carl"].pk, b["dana"].pk]))
+
+    def test_recipient_cannot_be_the_payer(self):
+        r = self.post_expense("bob", paid_by=self.m["orga"].pk)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(Expense.objects.filter(label="Fleurs").exists())
+
+    def test_recipient_cannot_have_a_custom_share(self):
+        r = self.post_expense("bob", split_mode="custom", **{
+            f"share_{self.m['orga'].pk}": "10", f"share_{self.m['bob'].pk}": "20"})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(Expense.objects.filter(label="Fleurs").exists())
+
+    def test_creator_cannot_hide_an_expense_from_themselves(self):
+        r = self.post_expense("bob", hidden_from=[self.m["bob"].pk])
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(Expense.objects.filter(label="Fleurs").exists())
+
+    def test_audience_cannot_be_changed_by_editing(self):
+        b = self.m
+        self.client.force_login(self.users["bob"])
+        r = self.client.post(reverse("expense_edit", args=[self.gift.pk]), {
+            "label": "Cadeau secret", "amount": "87.00", "category": "autre",
+            "date": "2027-02-06", "paid_by": b["bob"].pk, "split_mode": "equal",
+            "participants": self.all_pks(), "hidden_from": []})
+        self.assertEqual(r.status_code, 302)
+        self.gift.refresh_from_db()
+        self.assertEqual([h.pk for h in self.gift.hidden_from.all()], [b["orga"].pk])
+        self.assertNotIn(b["orga"].pk, [s.member_id for s in self.gift.shares.all()])
+
+    def test_only_creator_or_manager_among_non_recipients_can_edit(self):
+        url = reverse("expense_edit", args=[self.gift.pk])
+        self.client.force_login(self.users["carl"])
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.client.force_login(self.users["dana"])
+        self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_outsider_gets_404(self):
+        self.client.force_login(self.users["stranger"])
+        self.assertEqual(self.client.get(reverse("budget", args=[self.trip.pk])).status_code, 404)

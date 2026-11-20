@@ -136,7 +136,8 @@ class ExpenseForm(forms.Form):
         widget=forms.NumberInput(attrs={"step": "0.01", "min": "0.01"}),
     )
     category = forms.ChoiceField(label="Catégorie", choices=CATEGORY_CHOICES, initial="autre")
-    date = forms.DateField(label="Date", widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"))
+    date = forms.DateField(label="Date",
+                           widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"))
     paid_by = forms.ModelChoiceField(queryset=Member.objects.none(), label="Payé par")
     split_mode = forms.ChoiceField(label="Répartition", choices=Expense.SPLIT_CHOICES,
                                    widget=forms.RadioSelect, initial="equal")
@@ -145,7 +146,7 @@ class ExpenseForm(forms.Form):
         widget=forms.CheckboxSelectMultiple, label="Parts égales entre",
     )
 
-    def __init__(self, *args, trip, **kwargs):
+    def __init__(self, *args, trip, viewer=None, fixed_hidden=None, **kwargs):
         super().__init__(*args, **kwargs)
         qs = trip.members.select_related("user").order_by("id")
         self.members = list(qs)
@@ -158,25 +159,53 @@ class ExpenseForm(forms.Form):
                 max_digits=10, decimal_places=2,
                 widget=forms.NumberInput(attrs={"step": "0.01", "min": "0"}),
             )
+        # fixed_hidden is None : création (choix possible) ; sinon : édition (audience figée)
+        self.fixed_hidden = set(fixed_hidden or ())
+        if fixed_hidden is None:
+            choices = qs.exclude(pk=viewer.pk) if viewer is not None else qs.none()
+            field = forms.ModelMultipleChoiceField(
+                queryset=choices, required=False, widget=forms.CheckboxSelectMultiple,
+                label="Cacher à (par exemple le destinataire d’un cadeau)",
+                help_text="Ces personnes ne verront ni cette dépense ni les remboursements "
+                          "qui s’y rattachent, quel que soit leur rôle. Elles n’y participent "
+                          "pas. Modifiable seulement en supprimant puis recréant la dépense.",
+            )
+            field.label_from_instance = lambda m: m.label
+            self.fields["hidden_from"] = field
 
     @property
     def main_fields(self):
-        return [self[n] for n in ("label", "amount", "category", "date", "paid_by",
-                                  "split_mode", "participants")]
+        names = ["label", "amount", "category", "date", "paid_by", "split_mode", "participants"]
+        if "hidden_from" in self.fields:
+            names.append("hidden_from")
+        return [self[n] for n in names]
+
     @property
     def share_fields(self):
         return [self[f"share_{m.pk}"] for m in self.members]
+
+    def hidden_ids(self, cleaned):
+        if "hidden_from" in self.fields:
+            return {m.pk for m in cleaned.get("hidden_from") or []}
+        return set(self.fixed_hidden)
 
     def clean(self):
         cleaned = super().clean()
         amount, mode = cleaned.get("amount"), cleaned.get("split_mode")
         if amount is None or mode is None:
             return cleaned
+        hidden = self.hidden_ids(cleaned)
+        payer = cleaned.get("paid_by")
+        if hidden and payer is not None and payer.pk in hidden:
+            raise forms.ValidationError(
+                "Le payeur ne peut pas être un destinataire de la dépense cachée.")
         total = to_cents(amount)
         if mode == "equal":
-            parts = cleaned.get("participants")
+            parts = [p for p in (cleaned.get("participants") or []) if p.pk not in hidden]
             if not parts:
-                raise forms.ValidationError("Choisissez au moins un participant.")
+                raise forms.ValidationError(
+                    "Choisissez au moins un participant (les destinataires d’une dépense "
+                    "cachée n’y participent jamais).")
             shares = equal_split(total, [p.pk for p in parts])
         else:
             shares = {}
@@ -184,6 +213,9 @@ class ExpenseForm(forms.Form):
                 value = cleaned.get(f"share_{m.pk}")
                 if value and to_cents(value) > 0:
                     shares[m.pk] = to_cents(value)
+            if hidden & set(shares):
+                raise forms.ValidationError(
+                    "Les destinataires d’une dépense cachée ne peuvent pas avoir de part.")
             if sum(shares.values()) != total:
                 raise forms.ValidationError(
                     f"La somme des parts ({sum(shares.values()) / 100:.2f} €) "

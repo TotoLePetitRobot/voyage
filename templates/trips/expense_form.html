@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>{{ title }}</h1>
+{% if hidden_names %}<p class="notice">Cette dépense est cachée à : <b>{{ hidden_names|join:", " }}</b>. Ces personnes ne la voient pas. Pour changer cela, supprimez la dépense et recréez-la.</p>{% endif %}
 <form method="post">{% csrf_token %}
   {{ form.non_field_errors }}
   {% for f in form.main_fields %}

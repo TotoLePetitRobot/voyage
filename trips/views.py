@@ -258,74 +258,112 @@ def trip_summary(request, pk):
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
     })
 
+def _build_layer(key, expenses, ids, pools, caps, extras):
+    paid, base, transfer_owed = {}, {}, {}
+    total = Decimal("0")
+    for e in expenses:
+        paid[e.paid_by_id] = paid.get(e.paid_by_id, 0) + to_cents(e.amount)
+        if not e.is_transfer:
+            total += e.amount
+        for s in e.shares.all():
+            cents = to_cents(s.amount)
+            if e.is_transfer:
+                transfer_owed[s.member_id] = transfer_owed.get(s.member_id, 0) + cents
+            else:
+                k = (e.category, s.member_id)
+                base[k] = base.get(k, 0) + cents
+    if key:  # registre caché : parts simples, sans règles de solidarité
+        plain = {}
+        for (_, member_id), cents in base.items():
+            plain[member_id] = plain.get(member_id, 0) + cents
+        base_owed = pooled = final = plain
+    else:
+        base_owed, pooled, final = compute_owed(base, pools, caps, extras)
+    owed = {m: final.get(m, 0) + transfer_owed.get(m, 0) for m in ids}
+    balances = compute_balances(ids, paid, owed)
+    return {
+        "key": key,
+        "key_text": ",".join(str(i) for i in sorted(key)),
+        "balances": balances,
+        "transfers": suggest_transfers(balances),
+        "total": total,
+        "detail": {m: {"base": base_owed.get(m, 0), "pooled": pooled.get(m, 0),
+                       "final": final.get(m, 0)} for m in ids},
+    }
+
+
 def trip_calc(trip):
+    """Retourne (membres, registres). Le premier registre est le registre visible de tous ;
+    les suivants sont les registres cachés, un par groupe de destinataires."""
     members = list(trip.members.select_related("user"))
     ids = [m.pk for m in members]
-    paid = {}
-    for row in trip.expenses.order_by().values("paid_by").annotate(t=Sum("amount")):
-        paid[row["paid_by"]] = to_cents(row["t"])
-
-    base, transfer_owed = {}, {}
-    rows = (ExpenseShare.objects.filter(expense__trip=trip).order_by()
-            .values("expense__category", "expense__is_transfer", "member")
-            .annotate(t=Sum("amount")))
-    for r in rows:
-        cents = to_cents(r["t"])
-        if r["expense__is_transfer"]:
-            transfer_owed[r["member"]] = transfer_owed.get(r["member"], 0) + cents
-        else:
-            key = (r["expense__category"], r["member"])
-            base[key] = base.get(key, 0) + cents
-
+    groups = {frozenset(): []}
+    for e in trip.expenses.prefetch_related("shares", "hidden_from"):
+        groups.setdefault(frozenset(h.pk for h in e.hidden_from.all()), []).append(e)
     pools = {}
     for p in SolidarityPref.objects.filter(member__trip=trip):
         pools.setdefault(p.category, {})[p.member_id] = to_milli(p.weight)
     caps = {m.pk: to_cents(m.pay_cap) for m in members if m.pay_cap is not None}
     extras = {m.pk: to_cents(m.extra_max) for m in members if m.extra_max is not None}
-
-    base_owed, pooled, final = compute_owed(base, pools, caps, extras)
-    owed = {m: final.get(m, 0) + transfer_owed.get(m, 0) for m in ids}
-    balances = compute_balances(ids, paid, owed)
-    detail = {m: {"base": base_owed.get(m, 0), "pooled": pooled.get(m, 0),
-                  "final": final.get(m, 0)} for m in ids}
-    return members, balances, suggest_transfers(balances), detail
+    layers = [_build_layer(key, groups[key], ids, pools, caps, extras)
+              for key in sorted(groups, key=lambda k: (len(k), sorted(k)))]
+    return members, layers
 
 
 def trip_balances(trip):
-    members, balances, transfers, _ = trip_calc(trip)
-    return members, balances, transfers
+    members, layers = trip_calc(trip)
+    return members, layers[0]["balances"], layers[0]["transfers"]
+
 
 @login_required
 def budget(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    members, balances, transfers, detail = trip_calc(trip)
-    mine = detail[me.pk]
+    members, layers = trip_calc(trip)
+    by_id = {m.pk: m for m in members}
+
+    by_layer = {}
+    expenses = trip.expenses.select_related("paid_by__user").prefetch_related(
+        "shares__member__user", "hidden_from")
+    for e in expenses:
+        key = frozenset(h.pk for h in e.hidden_from.all())
+        if me.pk in key:
+            continue  # une dépense cachée à ce membre n'est jamais transmise au gabarit
+        e.can_edit = me.can_manage or e.created_by_id == me.pk
+        by_layer.setdefault(key, []).append(e)
+
+    shown = []
+    for layer in layers:
+        key = layer["key"]
+        if me.pk in key:
+            continue
+        balances = [{"label": m.label, "cents": layer["balances"][m.pk],
+                     "amount": Decimal(abs(layer["balances"][m.pk])) / 100}
+                    for m in members if m.pk not in key]
+        transfers = [{
+            "payer": by_id[a].label, "payee": by_id[b].label,
+            "payer_id": a, "payee_id": b, "cents": c, "amount": Decimal(c) / 100,
+            "can_mark": me.can_manage or me.pk in (a, b),
+        } for a, b, c in layer["transfers"]]
+        shown.append({
+            "hidden": bool(key), "key_text": layer["key_text"],
+            "hidden_names": [by_id[i].label for i in sorted(key)],
+            "balances": balances, "transfers": transfers,
+            "expenses": by_layer.get(key, []), "total": layer["total"],
+        })
+
+    mine = layers[0]["detail"][me.pk]
     my_detail = None
     if mine["base"] != mine["pooled"] or mine["pooled"] != mine["final"]:
         my_detail = {k: Decimal(v) / 100 for k, v in mine.items()}
-    by_id = {m.pk: m for m in members}
-    expenses = list(trip.expenses.select_related("paid_by__user")
-                    .prefetch_related("shares__member__user"))
-    for e in expenses:
-        e.can_edit = me.can_manage or e.created_by_id == me.pk
-    rows = [{"label": m.label, "cents": balances[m.pk],
-             "amount": Decimal(abs(balances[m.pk])) / 100} for m in members]
-    transfer_rows = [{
-        "payer": by_id[a].label, "payee": by_id[b].label,
-        "payer_id": a, "payee_id": b, "cents": c, "amount": Decimal(c) / 100,
-        "can_mark": me.can_manage or me.pk in (a, b),
-    } for a, b, c in transfers]
-    total = sum((e.amount for e in expenses if not e.is_transfer), Decimal("0"))
-    return render(request, "trips/budget.html", {
-        "trip": trip, "balances": rows, "transfers": transfer_rows,
-        "expenses": expenses, "total": total, "my_detail": my_detail,
-    })
+    return render(request, "trips/budget.html",
+                  {"trip": trip, "layers": shown, "my_detail": my_detail})
 
 
 def _save_expense(form, trip, creator, expense=None):
     cd = form.cleaned_data
+    created = expense is None
     with transaction.atomic():
-        if expense is None:
+        if created:
             expense = Expense(trip=trip, created_by=creator)
         expense.label = cd["label"]
         expense.category = cd["category"]
@@ -334,6 +372,8 @@ def _save_expense(form, trip, creator, expense=None):
         expense.date = cd["date"]
         expense.split_mode = cd["split_mode"]
         expense.save()
+        if created:
+            expense.hidden_from.set(cd.get("hidden_from") or [])
         expense.shares.all().delete()
         ExpenseShare.objects.bulk_create([
             ExpenseShare(expense=expense, member_id=mid, amount=Decimal(c) / 100)
@@ -345,9 +385,9 @@ def _save_expense(form, trip, creator, expense=None):
 @login_required
 def expense_add(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    initial = {"paid_by": me.pk, "date": timezone.localdate(),
+    initial = {"paid_by": me.pk, "date": timezone.localdate(), "category": "autre",
                "participants": [m.pk for m in trip.members.all()]}
-    form = ExpenseForm(request.POST or None, trip=trip, initial=initial)
+    form = ExpenseForm(request.POST or None, trip=trip, initial=initial, viewer=me)
     if request.method == "POST" and form.is_valid():
         _save_expense(form, trip, me)
         return redirect("budget", pk=trip.pk)
@@ -357,30 +397,37 @@ def expense_add(request, pk):
 
 @login_required
 def expense_edit(request, expense_pk):
-    expense = get_object_or_404(Expense, pk=expense_pk, trip__members__user=request.user)
+    expense = get_object_or_404(
+        Expense.objects.exclude(hidden_from__user=request.user),
+        pk=expense_pk, trip__members__user=request.user)
     trip = expense.trip
     me = trip.members.get(user=request.user)
     if expense.is_transfer or not (me.can_manage or expense.created_by_id == me.pk):
         raise PermissionDenied
+    hidden = list(expense.hidden_from.all())
     shares = {s.member_id: s.amount for s in expense.shares.all()}
-    initial = {"label": expense.label, "amount": expense.amount, 
-               "category": expense.category, "date": expense.date,
-               "paid_by": expense.paid_by_id, "split_mode": expense.split_mode,
-               "participants": list(shares)}
+    initial = {"label": expense.label, "amount": expense.amount, "date": expense.date,
+               "category": expense.category, "paid_by": expense.paid_by_id,
+               "split_mode": expense.split_mode, "participants": list(shares)}
     for mid, amt in shares.items():
         initial[f"share_{mid}"] = amt
-    form = ExpenseForm(request.POST or None, trip=trip, initial=initial)
+    form = ExpenseForm(request.POST or None, trip=trip, initial=initial, viewer=me,
+                       fixed_hidden={h.pk for h in hidden})
     if request.method == "POST" and form.is_valid():
         _save_expense(form, trip, me, expense)
         return redirect("budget", pk=trip.pk)
-    return render(request, "trips/expense_form.html",
-                  {"form": form, "trip": trip, "title": f"Modifier : {expense.label}"})
+    return render(request, "trips/expense_form.html", {
+        "form": form, "trip": trip, "title": f"Modifier : {expense.label}",
+        "hidden_names": [h.label for h in hidden],
+    })
 
 
 @login_required
 @require_POST
 def expense_delete(request, expense_pk):
-    expense = get_object_or_404(Expense, pk=expense_pk, trip__members__user=request.user)
+    expense = get_object_or_404(
+        Expense.objects.exclude(hidden_from__user=request.user),
+        pk=expense_pk, trip__members__user=request.user)
     me = expense.trip.members.get(user=request.user)
     if not (me.can_manage or expense.created_by_id == me.pk):
         raise PermissionDenied
@@ -397,10 +444,14 @@ def settle(request, pk):
         payer_id = int(request.POST["from_id"])
         payee_id = int(request.POST["to_id"])
         cents = int(request.POST["amount_cents"])
+        key = frozenset(int(x) for x in request.POST.get("layer", "").split(",") if x)
     except (KeyError, ValueError):
         raise Http404
-    _, _, transfers = trip_balances(trip)
-    if (payer_id, payee_id, cents) not in transfers:
+    if me.pk in key:
+        raise Http404
+    members, layers = trip_calc(trip)
+    layer = next((l for l in layers if l["key"] == key), None)
+    if layer is None or (payer_id, payee_id, cents) not in layer["transfers"]:
         raise Http404
     if not (me.can_manage or me.pk in (payer_id, payee_id)):
         raise PermissionDenied
@@ -410,6 +461,8 @@ def settle(request, pk):
             amount=Decimal(cents) / 100, split_mode="custom", is_transfer=True,
         )
         ExpenseShare.objects.create(expense=e, member_id=payee_id, amount=Decimal(cents) / 100)
+        if key:
+            e.hidden_from.set(Member.objects.filter(pk__in=key, trip=trip))
     messages.success(request, "Remboursement enregistré.")
     return redirect("budget", pk=trip.pk)
 

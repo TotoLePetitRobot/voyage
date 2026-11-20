@@ -185,6 +185,7 @@ class Expense(models.Model):
     date = models.DateField(default=timezone.localdate)
     split_mode = models.CharField(max_length=10, choices=SPLIT_CHOICES, default="equal")
     is_transfer = models.BooleanField(default=False)
+    hidden_from = models.ManyToManyField("Member", blank=True, related_name="hidden_expenses")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
