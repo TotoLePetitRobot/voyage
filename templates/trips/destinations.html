@@ -13,9 +13,8 @@
 
 {% for d in destinations %}
 <details class="card accordion" id="dest-{{ d.pk }}">
-  <summary>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</summary>
+  <summary>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}{% if d.stations %}<small> · Gares : {{ d.stations|join:" · " }}</small>{% endif %}</summary>
   <div class="accordion-body">
-    {% if d.stations %}<p>Gares : {{ d.stations|join:" · " }}</p>{% endif %}
     {% if d.notes %}<p><small>{{ d.notes|linebreaksbr }}</small></p>{% endif %}
     {% if d.extra_info %}
       <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
