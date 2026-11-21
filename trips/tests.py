@@ -5,20 +5,24 @@ import tempfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.http import QueryDict
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone as djtz
 
 from .backup import backup_sqlite
+from .calendar_utils import build_calendar
 from .importers import parse_destinations
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
                      MealItem, Member, SolidarityPref, Trip, Leg, DateVote,
-                     DestVote, Lodging)
-from .periods import parse_periods
+                     DestVote, Lodging, Poll, PollOption, PollVote)
+from .periods import parse_periods, check_period
+from .polls import parse_options, tally, votes_from_post
 from .ranking import summarize, top_pairs
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .shopping import aggregate, format_line, parse_line
@@ -1238,4 +1242,340 @@ class DestinationPageTests(TestCase):
     def test_outsider_gets_404(self):
         self.as_user("stranger")
         self.assertEqual(self.client.get(self.url).status_code, 404)
+
+class CalendarTests(SimpleTestCase):
+    TODAY = date(2026, 11, 20)
+
+    def test_without_periods_it_starts_this_month_for_12_months(self):
+        months, legend, truncated = build_calendar([], self.TODAY)
+        self.assertEqual(legend, [])
+        self.assertEqual(len(months), 12)
+        self.assertEqual(months[0]["title"], "novembre 2026")
+        self.assertEqual(months[-1]["title"], "octobre 2027")
+        self.assertFalse(truncated)
+
+    def test_cells_have_iso_label_and_past_flag(self):
+        months, _, _ = build_calendar([], self.TODAY)
+        cells = {c["iso"]: c for w in months[0]["weeks"] for c in w if c}
+        self.assertTrue(cells["2026-11-19"]["past"])
+        self.assertFalse(cells["2026-11-20"]["past"])
+        self.assertEqual(cells["2026-11-20"]["label"], "20 novembre 2026")
+        self.assertEqual(len(cells), 30)
+
+    def test_periods_extend_the_range_and_mark_days(self):
+        options = [SimpleNamespace(start_date=date(2027, 12, 30), end_date=date(2028, 1, 2))]
+        months, legend, _ = build_calendar(options, self.TODAY)
+        self.assertEqual(months[-1]["title"], "janvier 2028")
+        cells = {c["iso"]: c for m in months for w in m["weeks"] for c in w if c}
+        self.assertEqual(cells["2027-12-31"]["letters"], ["A"])
+        self.assertEqual(cells["2028-01-03"]["letters"], [])
+
+    def test_old_periods_are_shown_and_the_cap_applies(self):
+        options = [SimpleNamespace(start_date=date(2026, 9, 1), end_date=date(2026, 9, 5)),
+                   SimpleNamespace(start_date=date(2029, 1, 1), end_date=date(2029, 1, 5))]
+        months, _, truncated = build_calendar(options, self.TODAY)
+        self.assertEqual(months[0]["title"], "septembre 2026")
+        self.assertEqual(len(months), 24)
+        self.assertTrue(truncated)
+
+    def test_year_wrap(self):
+        months, _, _ = build_calendar([], date(2026, 12, 5))
+        self.assertEqual([m["title"] for m in months[:2]], ["décembre 2026", "janvier 2027"])
+
+    def test_allow_past_option_of_check_period(self):
+        today = date(2026, 11, 20)
+        self.assertIn("passé", check_period(date(2026, 11, 1), date(2026, 11, 5), today))
+        self.assertIsNone(check_period(date(2026, 11, 1), date(2026, 11, 5), today,
+                                       allow_past=True))
+        self.assertIn("après", check_period(date(2026, 11, 5), date(2026, 11, 1), today,
+                                            allow_past=True))
+
+
+class PeriodEditTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "coorga", "owner", "simple", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        self.m = {}
+        for n in names[:-1]:
+            roles = ["coorganizer"] if n == "coorga" else []
+            self.m[n] = Member.objects.create(trip=self.trip, display_name=n.title(),
+                                              user=self.users[n], roles=roles,
+                                              is_organizer=(n == "orga"))
+        self.base = djtz.localdate() + timedelta(days=30)
+        self.opt = DateOption.objects.create(
+            trip=self.trip, start_date=self.base, end_date=self.base + timedelta(days=7),
+            proposed_by=self.m["owner"])
+        self.url = reverse("date_edit", args=[self.opt.pk])
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def dates(self, start_offset, end_offset, **extra):
+        return {"start_date": (self.base + timedelta(days=start_offset)).isoformat(),
+                "end_date": (self.base + timedelta(days=end_offset)).isoformat(), **extra}
+
+    def test_who_can_open_the_edit_page(self):
+        for name in ("owner", "orga", "coorga"):
+            self.as_user(name)
+            self.assertEqual(self.client.get(self.url).status_code, 200, name)
+        self.as_user("simple")
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.post(self.url, self.dates(1, 5)).status_code, 403)
+        self.as_user("stranger")
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+    def test_edit_updates_the_dates(self):
+        self.as_user("owner")
+        r = self.client.post(self.url, self.dates(2, 9))
+        self.assertEqual(r.status_code, 302)
+        self.opt.refresh_from_db()
+        self.assertEqual(self.opt.start_date, self.base + timedelta(days=2))
+        self.assertEqual(self.opt.end_date, self.base + timedelta(days=9))
+
+    def test_votes_are_kept_unless_reset_is_requested(self):
+        DateVote.objects.create(member=self.m["simple"], date_option=self.opt, score=2)
+        self.as_user("owner")
+        self.client.post(self.url, self.dates(2, 9))
+        self.assertEqual(self.opt.votes.count(), 1)
+        self.client.post(self.url, self.dates(3, 9, reset_votes="on"))
+        self.assertEqual(self.opt.votes.count(), 0)
+
+    def test_duplicate_period_is_rejected(self):
+        other = DateOption.objects.create(
+            trip=self.trip, start_date=self.base + timedelta(days=20),
+            end_date=self.base + timedelta(days=25))
+        self.as_user("owner")
+        r = self.client.post(self.url, self.dates(20, 25))
+        self.assertEqual(r.status_code, 200)
+        self.opt.refresh_from_db()
+        self.assertEqual(self.opt.start_date, self.base)
+        self.assertTrue(DateOption.objects.filter(pk=other.pk).exists())
+
+    def test_end_before_start_is_rejected(self):
+        self.as_user("owner")
+        self.assertEqual(self.client.post(self.url, self.dates(9, 2)).status_code, 200)
+
+    def test_past_start_rules(self):
+        past = djtz.localdate() - timedelta(days=10)
+        old = DateOption.objects.create(trip=self.trip, start_date=past,
+                                        end_date=past + timedelta(days=3),
+                                        proposed_by=self.m["owner"])
+        url = reverse("date_edit", args=[old.pk])
+        self.as_user("owner")
+        # garder le même début passé : accepté
+        r = self.client.post(url, {"start_date": past.isoformat(),
+                                   "end_date": (past + timedelta(days=5)).isoformat()})
+        self.assertEqual(r.status_code, 302)
+        # choisir un nouveau début passé : refusé
+        r = self.client.post(url, {"start_date": (past + timedelta(days=1)).isoformat(),
+                                   "end_date": (past + timedelta(days=5)).isoformat()})
+        self.assertEqual(r.status_code, 200)
+
+    def test_calendar_page_has_clickable_days_and_edit_link_for_allowed_members_only(self):
+        list_url = reverse("date_list", args=[self.trip.pk])
+        self.as_user("owner")
+        page = self.client.get(list_url)
+        self.assertContains(page, f'data-date="{self.base.isoformat()}"')
+        self.assertContains(page, self.url)
+        self.as_user("simple")
+        self.assertNotContains(self.client.get(list_url), self.url)
+
+    def test_picking_two_days_posts_the_same_fields_as_the_manual_form(self):
+        self.as_user("simple")
+        start = self.base + timedelta(days=40)
+        r = self.client.post(reverse("date_list", args=[self.trip.pk]), {
+            "start_date": start.isoformat(),
+            "end_date": (start + timedelta(days=5)).isoformat()})
+        self.assertEqual(r.status_code, 302)
+        created = DateOption.objects.get(start_date=start)
+        self.assertEqual(created.proposed_by, self.m["simple"])
+
+
+class PollLogicTests(SimpleTestCase):
+    def test_parse_options(self):
+        self.assertEqual(parse_options("Ski\n  rando \n\nSKI\nSpa"), ["Ski", "rando", "Spa"])
+        for bad in ["", "Ski", "Ski\nski", "x" * 130 + "\ny",
+                    "\n".join(str(i) for i in range(16))]:
+            with self.assertRaises(ValueError):
+                parse_options(bad)
+
+    def test_votes_from_post(self):
+        ids = [1, 2, 3]
+        self.assertEqual(votes_from_post("single", QueryDict("choice=2"), ids), {2: 1})
+        self.assertEqual(votes_from_post("single", QueryDict("choice=9"), ids), {})
+        self.assertEqual(votes_from_post("single", QueryDict("choice="), ids), {})
+        self.assertEqual(votes_from_post("single", QueryDict("choice=%C2%B2"), ids), {})
+        self.assertEqual(votes_from_post(
+            "multiple", QueryDict("choice=1&choice=3&choice=9&choice=x"), ids), {1: 1, 3: 1})
+        self.assertEqual(votes_from_post("multiple", QueryDict(""), ids), {})
+        self.assertEqual(votes_from_post(
+            "scale", QueryDict("opt_1=2&opt_2=0&opt_3=&opt_9=1"), ids), {1: 2, 2: 0})
+        self.assertEqual(votes_from_post("scale", QueryDict("opt_1=5"), ids), {})
+
+    def test_tally_single_and_multiple(self):
+        rows, voters = tally("single", [1, 2, 3], [(1, "a", 1), (1, "b", 1), (2, "c", 1)])
+        self.assertEqual(voters, 3)
+        self.assertEqual([r["id"] for r in rows], [1, 2, 3])
+        self.assertEqual([r["percent"] for r in rows], [67, 33, 0])
+        self.assertEqual([r["leader"] for r in rows], [True, False, False])
+        rows, voters = tally("multiple", [1, 2], [(1, "a", 1), (2, "a", 1), (2, "b", 1)])
+        self.assertEqual(voters, 2)
+        self.assertEqual([(r["id"], r["percent"]) for r in rows], [(2, 100), (1, 50)])
+
+    def test_tally_scale_and_empty(self):
+        votes = [(1, "a", 2), (1, "b", 0), (2, "a", 1), (2, "b", 1), (3, "a", 0)]
+        rows, voters = tally("scale", [1, 2, 3], votes)
+        self.assertEqual(voters, 2)
+        self.assertEqual([r["id"] for r in rows], [1, 2, 3])   # 2 points chacun : plus de Oui d'abord
+        rows, voters = tally("single", [1, 2], [])
+        self.assertEqual((voters, [r["leader"] for r in rows], [r["percent"] for r in rows]),
+                         (0, [False, False], [None, None]))
+
+
+class PollViewTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "maker", "voter", "other", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        labels = {"orga": "Orga", "maker": "Createur", "voter": "Votante", "other": "Autrui"}
+        self.m = {n: Member.objects.create(trip=self.trip, display_name=labels[n],
+                                           user=self.users[n], is_organizer=(n == "orga"))
+                  for n in names[:4]}
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def poll(self, kind="single", options=("Ski", "Rando", "Spa")):
+        poll = Poll.objects.create(trip=self.trip, question="Activité ?", kind=kind,
+                                   created_by=self.m["maker"])
+        for n, text in enumerate(options):
+            PollOption.objects.create(poll=poll, text=text, position=n)
+        return poll
+
+    def option_ids(self, poll):
+        return list(poll.options.values_list("pk", flat=True))
+
+    def test_any_member_can_create_a_poll(self):
+        self.as_user("voter")
+        r = self.client.post(reverse("poll_add", args=[self.trip.pk]), {
+            "question": "Où manger ?", "description": "", "kind": "multiple",
+            "options_text": "Crêperie\nPizzeria\nCrêperie\n"})
+        poll = Poll.objects.get()
+        self.assertRedirects(r, reverse("poll_detail", args=[poll.pk]))
+        self.assertEqual(poll.kind, "multiple")
+        self.assertEqual(poll.created_by, self.m["voter"])
+        self.assertEqual([o.text for o in poll.options.all()], ["Crêperie", "Pizzeria"])
+
+    def test_a_poll_needs_two_different_options(self):
+        self.as_user("voter")
+        r = self.client.post(reverse("poll_add", args=[self.trip.pk]), {
+            "question": "Seul ?", "kind": "single", "options_text": "Seul"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Poll.objects.count(), 0)
+
+    def test_single_choice_replaces_the_previous_vote(self):
+        poll = self.poll()
+        a, b, c = self.option_ids(poll)
+        self.as_user("voter")
+        url = reverse("poll_vote", args=[poll.pk])
+        self.client.post(url, {"choice": a})
+        self.client.post(url, {"choice": b})
+        votes = PollVote.objects.filter(member=self.m["voter"])
+        self.assertEqual([v.option_id for v in votes], [b])
+        self.client.post(url, {"choice": ""})
+        self.assertEqual(votes.count(), 0)
+
+    def test_multiple_choice_ignores_unknown_options(self):
+        poll = self.poll("multiple")
+        a, b, c = self.option_ids(poll)
+        self.as_user("voter")
+        self.client.post(reverse("poll_vote", args=[poll.pk]), {"choice": [a, c, 99999]})
+        self.assertEqual(set(PollVote.objects.values_list("option_id", flat=True)), {a, c})
+
+    def test_scale_votes(self):
+        poll = self.poll("scale")
+        a, b, c = self.option_ids(poll)
+        self.as_user("voter")
+        self.client.post(reverse("poll_vote", args=[poll.pk]),
+                         {f"opt_{a}": "2", f"opt_{b}": "0", f"opt_{c}": ""})
+        scores = dict(PollVote.objects.values_list("option_id", "score"))
+        self.assertEqual(scores, {a: 2, b: 0})
+
+    def test_options_of_another_poll_are_ignored(self):
+        first, second = self.poll(), self.poll()
+        foreign = self.option_ids(second)[0]
+        self.as_user("voter")
+        self.client.post(reverse("poll_vote", args=[first.pk]), {"choice": foreign})
+        self.assertEqual(PollVote.objects.count(), 0)
+
+    def test_closed_poll_rejects_votes(self):
+        poll = self.poll()
+        poll.is_closed = True
+        poll.save()
+        self.as_user("voter")
+        self.client.post(reverse("poll_vote", args=[poll.pk]),
+                         {"choice": self.option_ids(poll)[0]})
+        self.assertEqual(PollVote.objects.count(), 0)
+
+    def test_results_are_visible_but_never_who_voted(self):
+        poll = self.poll()
+        a, b, c = self.option_ids(poll)
+        for name, option in (("voter", a), ("other", b)):
+            self.as_user(name)
+            self.client.post(reverse("poll_vote", args=[poll.pk]), {"choice": option})
+        self.as_user("maker")
+        page = self.client.get(reverse("poll_detail", args=[poll.pk]))
+        self.assertContains(page, "2 votants")
+        self.assertContains(page, "50 %")
+        self.assertNotContains(page, "Votante")
+        self.assertNotContains(page, "Autrui")
+
+    def test_only_creator_or_manager_can_manage(self):
+        poll = self.poll()
+        for name in ("voter", "other"):
+            self.as_user(name)
+            self.assertEqual(self.client.get(reverse("poll_edit", args=[poll.pk])).status_code, 403)
+            for action in ("poll_toggle", "poll_delete", "poll_option_add"):
+                self.assertEqual(self.client.post(reverse(action, args=[poll.pk]),
+                                                  {"text": "Piège"}).status_code, 403, action)
+        poll.refresh_from_db()
+        self.assertFalse(poll.is_closed)
+        for name in ("maker", "orga"):
+            self.as_user(name)
+            self.client.post(reverse("poll_toggle", args=[poll.pk]))
+            poll.refresh_from_db()
+            self.assertTrue(poll.is_closed, name)
+            self.client.post(reverse("poll_toggle", args=[poll.pk]))
+
+    def test_option_management(self):
+        poll = self.poll(options=("Ski", "Rando"))
+        self.as_user("maker")
+        add = reverse("poll_option_add", args=[poll.pk])
+        self.client.post(add, {"text": "Spa"})
+        self.client.post(add, {"text": "spa"})            # doublon
+        self.assertEqual(poll.options.count(), 3)
+        spa = poll.options.get(text="Spa")
+        PollVote.objects.create(option=spa, member=self.m["voter"])
+        self.client.post(reverse("poll_option_delete", args=[spa.pk]))
+        self.assertEqual(poll.options.count(), 2)
+        self.assertEqual(PollVote.objects.count(), 0)     # les votes partent avec l'option
+        self.client.post(reverse("poll_option_delete", args=[poll.options.first().pk]))
+        self.assertEqual(poll.options.count(), 2)         # minimum deux options
+
+    def test_option_limit(self):
+        poll = self.poll(options=tuple(f"Option {i}" for i in range(15)))
+        self.as_user("maker")
+        self.client.post(reverse("poll_option_add", args=[poll.pk]), {"text": "Une de trop"})
+        self.assertEqual(poll.options.count(), 15)
+
+    def test_outsider_gets_404(self):
+        poll = self.poll()
+        self.as_user("stranger")
+        self.assertEqual(self.client.get(reverse("polls", args=[self.trip.pk])).status_code, 404)
+        self.assertEqual(self.client.get(reverse("poll_detail", args=[poll.pk])).status_code, 404)
+        self.assertEqual(self.client.post(reverse("poll_vote", args=[poll.pk]),
+                                          {"choice": 1}).status_code, 404)
 

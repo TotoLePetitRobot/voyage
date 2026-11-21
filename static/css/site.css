@@ -136,3 +136,22 @@ details.accordion > summary a { color: var(--brand); }
 .accordion-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .toolbar { display: flex; gap: 8px; }
 
+:root { --accent-soft: #FBEFD5; }
+@media (prefers-color-scheme: dark) { :root { --accent-soft: #3A2D12; } }
+
+.cal td { padding: 0; }
+.cal button.day { display: block; width: 100%; height: 100%; min-height: 2.7em; padding: 2px; background: transparent; color: var(--ink); border: 0; border-radius: 0; font: inherit; font-weight: 400; cursor: pointer; }
+.cal button.day:hover:not(:disabled) { background: var(--brand-soft); filter: none; }
+.cal button.day:disabled { color: var(--muted); opacity: .45; cursor: not-allowed; }
+.cal button.day .tag { display: block; color: var(--brand); font-size: 11px; font-weight: 700; }
+.cal button.day.in-range { background: var(--accent-soft); }
+.cal button.day.sel-start, .cal button.day.sel-end { background: var(--brand); color: var(--brand-ink); }
+.cal button.day.sel-start .tag, .cal button.day.sel-end .tag { color: var(--brand-ink); }
+.pick-hint { color: var(--muted); }
+.pick-panel { background: var(--surface); border: 1px solid var(--brand); border-radius: var(--radius); padding: 12px 16px; margin: 0 0 12px; }
+
+.result p { margin: 0 0 4px; }
+.bar { background: var(--line); border-radius: 6px; height: 10px; overflow: hidden; margin-bottom: 12px; }
+.bar > span { display: block; height: 100%; background: var(--brand); }
+.result.leader .bar > span { background: var(--accent); }
+

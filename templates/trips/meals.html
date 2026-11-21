@@ -20,7 +20,6 @@
   <div class="card">
     <h3><label><input type="checkbox" name="m" value="{{ meal.pk }}" form="select-form">
       {{ meal.get_meal_type_display }} : {{ meal.title }}</label></h3>
-    {% if meal.proposed_by %}<small>Proposé par {{ meal.proposed_by.label }}</small>{% endif %}
     {% if meal.items.all %}
       <ul>{% for i in meal.items.all %}<li>{{ i.display }}</li>{% endfor %}</ul>
     {% endif %}

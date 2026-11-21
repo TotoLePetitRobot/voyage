@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sondages – {{ trip.name }}</h1>
+<p>Posez vos propres questions au groupe.</p>
+<p><a href="{% url 'poll_add' trip.pk %}">Créer un sondage</a></p>
+
+{% for p in polls %}
+  <div class="card">
+    <h3><a href="{% url 'poll_detail' p.pk %}">{{ p.question }}</a>{% if p.is_closed %} <span class="badge">Clôturé</span>{% endif %}</h3>
+    <small>{{ p.get_kind_display }} · {{ p.voters }} votant{{ p.voters|pluralize }}{% if p.created_by %} · par {{ p.created_by.label }}{% endif %}</small>
+  </div>
+{% empty %}
+  <p>Aucun sondage pour l’instant.</p>
+{% endfor %}
+{% endblock %}

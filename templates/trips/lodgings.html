@@ -23,7 +23,6 @@
         {% endif %}
       </dl>
       {% if l.notes %}<p>{{ l.notes|linebreaksbr }}</p>{% endif %}
-      {% if l.proposed_by %}<small>Proposé par {{ l.proposed_by.label }}</small>{% endif %}
       {% if l.can_edit %}
         <p><a href="{% url 'lodging_edit' l.pk %}">Modifier</a>
         <form method="post" action="{% url 'lodging_delete' l.pk %}" style="display:inline"

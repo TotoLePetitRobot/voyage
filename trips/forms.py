@@ -6,8 +6,9 @@ from django.utils import timezone
 from django.core.validators import URLValidator
 
 from .models import (CATEGORY_CHOICES, DateOption, Destination, Expense, Meal, 
-                     Member, Trip, Leg, Lodging)
+                     Member, Trip, Leg, Lodging, Poll)
 from .periods import check_period
+from .polls import parse_options
 from .settlement import equal_split, to_cents
 from .shopping import format_line, parse_line
 
@@ -108,18 +109,29 @@ class ImportForm(forms.Form):
         return f
 
 class DateOptionForm(forms.ModelForm):
-    start_date = forms.DateField(label="Arrivée", widget=forms.DateInput(attrs={"type": "date"}))
-    end_date = forms.DateField(label="Départ", widget=forms.DateInput(attrs={"type": "date"}))
+    start_date = forms.DateField(label="Arrivée", widget=forms.DateInput(
+        attrs={"type": "date"}, format="%Y-%m-%d"))
+    end_date = forms.DateField(label="Départ", widget=forms.DateInput(
+        attrs={"type": "date"}, format="%Y-%m-%d"))
+    reset_votes = forms.BooleanField(
+        required=False, label="Effacer les votes déjà donnés pour cette période",
+        help_text="Par défaut, les votes sont conservés même si les dates changent.")
 
     class Meta:
         model = DateOption
         fields = ["start_date", "end_date"]
 
+    def __init__(self, *args, has_votes=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not has_votes:
+            del self.fields["reset_votes"]
+
     def clean(self):
         cleaned = super().clean()
         start, end = cleaned.get("start_date"), cleaned.get("end_date")
         if start and end:
-            problem = check_period(start, end, timezone.localdate())
+            keeps_start = bool(self.instance.pk) and start == self.instance.start_date
+            problem = check_period(start, end, timezone.localdate(), allow_past=keeps_start)
             if problem:
                 raise forms.ValidationError(problem)
         return cleaned
@@ -369,3 +381,34 @@ class LodgingForm(forms.ModelForm):
         if start and end and end < start:
             self.add_error("end_date", "La fin doit être après le début.")
         return cleaned
+
+class PollForm(forms.ModelForm):
+    options_text = forms.CharField(
+        label="Options", widget=forms.Textarea(attrs={"rows": 5}),
+        help_text="Une option par ligne (de 2 à 15). Exemple : Ski, Randonnée, Spa.")
+
+    class Meta:
+        model = Poll
+        fields = ["question", "description", "kind"]
+        widgets = {"description": forms.Textarea(attrs={"rows": 3}),
+                   "kind": forms.RadioSelect}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.options = []
+
+    def clean_options_text(self):
+        text = self.cleaned_data["options_text"]
+        try:
+            self.options = parse_options(text)
+        except ValueError as error:
+            raise forms.ValidationError(str(error))
+        return text
+
+
+class PollEditForm(forms.ModelForm):
+    class Meta:
+        model = Poll
+        fields = ["question", "description"]
+        widgets = {"description": forms.Textarea(attrs={"rows": 3})}
+

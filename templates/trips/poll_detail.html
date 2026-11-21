@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ poll.question }}{% if poll.is_closed %} <span class="badge">Clôturé</span>{% endif %}</h1>
+{% if poll.description %}<p>{{ poll.description|linebreaksbr }}</p>{% endif %}
+<p><small>{{ poll.get_kind_display }} · {{ voters }} votant{{ voters|pluralize }}{% if poll.created_by %} · créé par {{ poll.created_by.label }}{% endif %}. Les votes individuels ne sont pas montrés.</small></p>
+
+{% if not poll.is_closed %}
+<h2>Mon vote</h2>
+<form method="post" action="{% url 'poll_vote' poll.pk %}">{% csrf_token %}
+  {% if poll.kind == "single" %}
+    {% for o in options %}
+      <p><label><input type="radio" name="choice" value="{{ o.pk }}"{% if o.my_score is not None %} checked{% endif %}> {{ o.text }}</label></p>
+    {% endfor %}
+    <p><label><input type="radio" name="choice" value=""{% if not has_vote %} checked{% endif %}> Pas d’avis</label></p>
+  {% elif poll.kind == "multiple" %}
+    {% for o in options %}
+      <p><label><input type="checkbox" name="choice" value="{{ o.pk }}"{% if o.my_score is not None %} checked{% endif %}> {{ o.text }}</label></p>
+    {% endfor %}
+  {% else %}
+    {% for o in options %}
+      <fieldset><legend>{{ o.text }}</legend>
+        <label><input type="radio" name="opt_{{ o.pk }}" value="2"{% if o.my_score == 2 %} checked{% endif %}> Oui</label>
+        <label><input type="radio" name="opt_{{ o.pk }}" value="1"{% if o.my_score == 1 %} checked{% endif %}> Peut-être</label>
+        <label><input type="radio" name="opt_{{ o.pk }}" value="0"{% if o.my_score == 0 %} checked{% endif %}> Non</label>
+        <label><input type="radio" name="opt_{{ o.pk }}" value=""{% if o.my_score is None %} checked{% endif %}> Pas d’avis</label>
+      </fieldset>
+    {% endfor %}
+  {% endif %}
+  <button>Enregistrer mon vote</button>
+</form>
+{% endif %}
+
+<h2>Résultats</h2>
+{% for r in results %}
+  <div class="result{% if r.leader %} leader{% endif %}">
+    <p><b>{{ r.option.text }}</b>
+      {% if poll.kind == "scale" %}
+        <small>Oui {{ r.yes }} · Peut-être {{ r.maybe }} · Non {{ r.no }} · score {{ r.total }}</small>
+      {% else %}
+        <small>{{ r.votes }} vote{{ r.votes|pluralize }}{% if r.percent is not None %} ({{ r.percent }} %){% endif %}</small>
+      {% endif %}
+    </p>
+    {% if poll.kind != "scale" %}<div class="bar"><span style="width: {{ r.percent|default:0 }}%"></span></div>{% endif %}
+  </div>
+{% endfor %}
+
+{% if can_edit %}
+<h2>Gérer ce sondage</h2>
+<p><a href="{% url 'poll_edit' poll.pk %}">Modifier la question</a>
+  <form method="post" action="{% url 'poll_toggle' poll.pk %}" style="display:inline">{% csrf_token %}<button>{% if poll.is_closed %}Rouvrir{% else %}Clôturer{% endif %}</button></form>
+  <form method="post" action="{% url 'poll_delete' poll.pk %}" style="display:inline"
+        onsubmit="return confirm('Supprimer ce sondage et ses votes ?')">{% csrf_token %}<button>Supprimer</button></form></p>
+  {% if not poll.is_closed %}
+    <h3>Options</h3>
+    <ul>
+      {% for o in options %}
+        <li>{{ o.text }}
+          <form method="post" action="{% url 'poll_option_delete' o.pk %}" style="display:inline"
+                onsubmit="return confirm('Supprimer cette option et ses votes ?')">{% csrf_token %}<button>Supprimer</button></form></li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="{% url 'poll_option_add' poll.pk %}">{% csrf_token %}
+      <input type="text" name="text" maxlength="120" required placeholder="Nouvelle option">
+      <button>Ajouter</button>
+    </form>
+  {% endif %}
+{% endif %}
+<p><a href="{% url 'polls' trip.pk %}">Retour aux sondages</a></p>
+{% endblock %}

@@ -16,14 +16,16 @@ from django.views.decorators.http import require_POST
 from .calendar_utils import build_calendar
 from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm, 
                     MealForm, MemberForm, PseudoForm, SolidarityForm, TripForm,
-                    LegForm, LodgingForm)
+                    LegForm, LodgingForm, PollEditForm, PollForm)
 from .importers import parse_destinations
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
 from .middleware import PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
-                     Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES)
+                     Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES, Poll,
+                     PollOption, PollVote)
 from .periods import parse_periods
+from .polls import tally, votes_from_post
 from .ranking import summarize, top_pairs
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
@@ -164,7 +166,9 @@ MIN_ANONYMOUS_FOR_STATS = 3
 @login_required
 def date_list(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    options = list(trip.date_options.select_related("proposed_by__user"))[:MAX_DATE_OPTIONS]
+    options = list(trip.date_options.select_related("proposed_by"))[:MAX_DATE_OPTIONS]
+    for opt in options:
+        opt.can_edit = me.can_manage or opt.proposed_by_id == me.pk
     form = DateOptionForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         start, end = form.cleaned_data["start_date"], form.cleaned_data["end_date"]
@@ -177,12 +181,32 @@ def date_list(request, pk):
             opt.trip, opt.proposed_by = trip, me
             opt.save()
             return redirect("date_list", pk=trip.pk)
-    months, legend, truncated = build_calendar(options)
+    months, legend, truncated = build_calendar(options, timezone.localdate())
     return render(request, "trips/dates.html", {
         "trip": trip, "me": me, "form": form,
         "months": months, "legend": legend, "truncated": truncated,
     })
 
+@login_required
+def date_edit(request, opt_pk):
+    opt = get_object_or_404(DateOption, pk=opt_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, opt.trip_id)
+    if not (me.can_manage or opt.proposed_by_id == me.pk):
+        raise PermissionDenied
+    votes = opt.votes.count()
+    form = DateOptionForm(request.POST or None, instance=opt, has_votes=votes > 0)
+    if request.method == "POST" and form.is_valid():
+        start, end = form.cleaned_data["start_date"], form.cleaned_data["end_date"]
+        if trip.date_options.filter(start_date=start, end_date=end).exclude(pk=opt.pk).exists():
+            form.add_error(None, "Cette période existe déjà.")
+        else:
+            with transaction.atomic():
+                form.save()
+                if form.cleaned_data.get("reset_votes"):
+                    opt.votes.all().delete()
+            messages.success(request, "Période modifiée.")
+            return redirect("date_list", pk=trip.pk)
+    return render(request, "trips/date_form.html", {"form": form, "trip": trip, "votes": votes})
 
 @login_required
 @require_POST
@@ -912,3 +936,155 @@ def destination_list(request, pk):
     for d in items:
         d.can_delete = me.can_manage or d.proposed_by_id == me.pk
     return render(request, "trips/destinations.html", {"trip": trip, "destinations": items})
+
+MAX_POLLS = 20
+MAX_POLL_OPTIONS = 15
+
+
+def _poll_for_member(request, poll_pk):
+    poll = get_object_or_404(Poll, pk=poll_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, poll.trip_id)
+    return poll, trip, me
+
+
+def _require_poll_manager(poll, me):
+    if not (me.can_manage or poll.created_by_id == me.pk):
+        raise PermissionDenied
+
+
+@login_required
+def polls(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    items = trip.polls.select_related("created_by").annotate(
+        voters=Count("options__votes__member", distinct=True))
+    return render(request, "trips/polls.html", {"trip": trip, "polls": items})
+
+
+@login_required
+def poll_add(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if trip.polls.count() >= MAX_POLLS:
+        messages.error(request, f"Maximum {MAX_POLLS} sondages par voyage.")
+        return redirect("polls", pk=trip.pk)
+    form = PollForm(request.POST or None, initial={"kind": "single"})
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            poll = form.save(commit=False)
+            poll.trip, poll.created_by = trip, me
+            poll.save()
+            PollOption.objects.bulk_create([
+                PollOption(poll=poll, text=text, position=n)
+                for n, text in enumerate(form.options)])
+        return redirect("poll_detail", poll_pk=poll.pk)
+    return render(request, "trips/poll_form.html",
+                  {"form": form, "trip": trip, "title": "Créer un sondage"})
+
+
+@login_required
+def poll_detail(request, poll_pk):
+    poll, trip, me = _poll_for_member(request, poll_pk)
+    options = list(poll.options.all())
+    ids = [o.pk for o in options]
+    votes = list(PollVote.objects.filter(option__poll=poll)
+                 .values_list("option_id", "member_id", "score"))
+    results, voters = tally(poll.kind, ids, votes)
+    by_id = {o.pk: o for o in options}
+    for row in results:
+        row["option"] = by_id[row["id"]]
+    mine = {option: score for option, member, score in votes if member == me.pk}
+    for o in options:
+        o.my_score = mine.get(o.pk)
+    return render(request, "trips/poll_detail.html", {
+        "poll": poll, "trip": trip, "options": options, "results": results,
+        "voters": voters, "has_vote": bool(mine),
+        "can_edit": me.can_manage or poll.created_by_id == me.pk,
+    })
+
+
+@login_required
+@require_POST
+def poll_vote(request, poll_pk):
+    poll, trip, me = _poll_for_member(request, poll_pk)
+    if poll.is_closed:
+        messages.error(request, "Ce sondage est clôturé.")
+        return redirect("poll_detail", poll_pk=poll.pk)
+    chosen = votes_from_post(poll.kind, request.POST, [o.pk for o in poll.options.all()])
+    with transaction.atomic():
+        PollVote.objects.filter(member=me, option__poll=poll).delete()
+        PollVote.objects.bulk_create([
+            PollVote(option_id=option, member=me, score=score)
+            for option, score in chosen.items()])
+    messages.success(request, "Votre vote est enregistré.")
+    return redirect("poll_detail", poll_pk=poll.pk)
+
+
+@login_required
+def poll_edit(request, poll_pk):
+    poll, trip, me = _poll_for_member(request, poll_pk)
+    _require_poll_manager(poll, me)
+    form = PollEditForm(request.POST or None, instance=poll)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("poll_detail", poll_pk=poll.pk)
+    return render(request, "trips/poll_form.html",
+                  {"form": form, "trip": trip, "title": "Modifier le sondage"})
+
+
+@login_required
+@require_POST
+def poll_delete(request, poll_pk):
+    poll, trip, me = _poll_for_member(request, poll_pk)
+    _require_poll_manager(poll, me)
+    poll.delete()
+    return redirect("polls", pk=trip.pk)
+
+
+@login_required
+@require_POST
+def poll_toggle(request, poll_pk):
+    poll, trip, me = _poll_for_member(request, poll_pk)
+    _require_poll_manager(poll, me)
+    poll.is_closed = not poll.is_closed
+    poll.save(update_fields=["is_closed"])
+    return redirect("poll_detail", poll_pk=poll.pk)
+
+
+@login_required
+@require_POST
+def poll_option_add(request, poll_pk):
+    poll, trip, me = _poll_for_member(request, poll_pk)
+    _require_poll_manager(poll, me)
+    text = " ".join(request.POST.get("text", "").split())
+    existing = list(poll.options.all())
+    if poll.is_closed:
+        messages.error(request, "Ce sondage est clôturé.")
+    elif not text:
+        messages.error(request, "Indiquez le texte de l’option.")
+    elif len(text) > 120:
+        messages.error(request, "120 caractères au maximum par option.")
+    elif len(existing) >= MAX_POLL_OPTIONS:
+        messages.error(request, f"{MAX_POLL_OPTIONS} options au maximum.")
+    elif text.casefold() in {o.text.casefold() for o in existing}:
+        messages.error(request, "Cette option existe déjà.")
+    else:
+        PollOption.objects.create(
+            poll=poll, text=text,
+            position=max((o.position for o in existing), default=-1) + 1)
+        messages.success(request, "Option ajoutée.")
+    return redirect("poll_detail", poll_pk=poll.pk)
+
+
+@login_required
+@require_POST
+def poll_option_delete(request, option_pk):
+    option = get_object_or_404(PollOption, pk=option_pk,
+                               poll__trip__members__user=request.user)
+    poll = option.poll
+    trip, me = get_trip_and_member(request, poll.trip_id)
+    _require_poll_manager(poll, me)
+    if poll.options.count() <= 2:
+        messages.error(request, "Un sondage doit garder au moins deux options.")
+    else:
+        option.delete()
+    return redirect("poll_detail", poll_pk=poll.pk)
+

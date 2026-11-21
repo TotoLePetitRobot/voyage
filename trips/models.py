@@ -345,3 +345,50 @@ class Lodging(models.Model):
 
     def __str__(self):
         return self.name
+
+POLL_KINDS = [
+    ("single", "Un seul choix"),
+    ("multiple", "Plusieurs choix possibles"),
+    ("scale", "Oui, peut-être ou non pour chaque option"),
+]
+
+
+class Poll(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="polls")
+    question = models.CharField("Question", max_length=200)
+    description = models.TextField("Précisions (facultatif)", blank=True)
+    kind = models.CharField("Type de vote", max_length=8, choices=POLL_KINDS, default="single")
+    is_closed = models.BooleanField(default=False)
+    created_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="polls_created")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return self.question
+
+
+class PollOption(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name="options")
+    text = models.CharField(max_length=120)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["position", "id"]
+
+    def __str__(self):
+        return self.text
+
+
+class PollVote(models.Model):
+    option = models.ForeignKey(PollOption, on_delete=models.CASCADE, related_name="votes")
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="poll_votes")
+    score = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["option", "member"], name="unique_poll_vote")
+        ]
+

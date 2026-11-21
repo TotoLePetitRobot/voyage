@@ -18,13 +18,13 @@ def parse_date(text):
     raise ValueError(f"date illisible « {text} » (format attendu : jj/mm/aaaa)")
 
 
-def check_period(start, end, today):
+def check_period(start, end, today, allow_past=False):
     """Retourne un message d'erreur en français, ou None si la période est valable."""
     if end < start:
         return "La date de départ doit être après l’arrivée."
     if (end - start).days > 60:
         return "Une période ne peut pas dépasser 60 nuits."
-    if start < today:
+    if start < today and not allow_past:
         return "La période ne peut pas commencer dans le passé."
     if start > today + timedelta(days=730):
         return "Choisissez une date dans les deux prochaines années."

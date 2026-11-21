@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ title }}</h1>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
+<p><a href="{% url 'polls' trip.pk %}">Retour aux sondages</a></p>
+{% endblock %}

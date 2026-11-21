@@ -2,14 +2,31 @@
 {% block content %}
 <h1>Périodes envisagées – {{ trip.name }}</h1>
 
-{% include "trips/_calendar.html" %}
-{% if truncated %}<p><small>Calendrier limité à 12 mois.</small></p>{% endif %}
+{% if form.non_field_errors %}<div class="notice">{{ form.non_field_errors }}</div>{% endif %}
 
+<h2>Proposer une période sur le calendrier</h2>
+<p id="pick-hint" class="pick-hint" aria-live="polite">Cliquez sur le jour d’arrivée, puis sur le jour de départ.</p>
+<div id="pick-panel" class="pick-panel" hidden>
+  <p><b id="pick-text"></b></p>
+  <p id="pick-warning" class="warn" hidden></p>
+  <form method="post" id="pick-form">{% csrf_token %}
+    <input type="hidden" name="start_date" id="pick-start">
+    <input type="hidden" name="end_date" id="pick-end">
+    <button type="submit" id="pick-submit">Proposer cette période</button>
+    <button type="button" id="pick-cancel">Annuler</button>
+  </form>
+</div>
+
+<div id="pick-calendar">{% include "trips/_calendar.html" %}</div>
+{% if truncated %}<p><small>Calendrier limité à 24 mois.</small></p>{% endif %}
+
+<h2>Périodes proposées</h2>
 <ul>
 {% for letter, o in legend %}
   <li><b>{{ letter }}</b> : du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}
-    ({{ o.nights }} nuit{{ o.nights|pluralize }}){% if o.proposed_by %} – proposée par {{ o.proposed_by.label }}{% endif %}
-    {% if me.can_manage or o.proposed_by_id == me.id %}
+    ({{ o.nights }} nuit{{ o.nights|pluralize }})
+    {% if o.can_edit %}
+      <a href="{% url 'date_edit' o.pk %}">Modifier</a>
       <form method="post" action="{% url 'date_delete' o.pk %}" style="display:inline"
             onsubmit="return confirm('Supprimer cette période ?')">{% csrf_token %}<button>Supprimer</button></form>
     {% endif %}
@@ -19,8 +36,89 @@
 {% endfor %}
 </ul>
 
-<h2>Proposer une période</h2>
-<form method="post">{% csrf_token %}{{ form.as_p }}<button>Ajouter</button></form>
+<h2>Ou saisir les dates à la main</h2>
+<form method="post">{% csrf_token %}
+  {% for f in form %}<p>{{ f.errors }}{{ f.label_tag }} {{ f }}</p>{% endfor %}
+  <button>Ajouter</button>
+</form>
 <p><a href="{% url 'date_import' trip.pk %}">Importer plusieurs périodes depuis un fichier CSV</a></p>
 <p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+
+<script>
+(function () {
+  var cal = document.getElementById("pick-calendar");
+  if (!cal) return;
+  var MAX_NIGHTS = 60;
+  var hint = document.getElementById("pick-hint");
+  var panel = document.getElementById("pick-panel");
+  var text = document.getElementById("pick-text");
+  var warning = document.getElementById("pick-warning");
+  var inStart = document.getElementById("pick-start");
+  var inEnd = document.getElementById("pick-end");
+  var submit = document.getElementById("pick-submit");
+  var days = Array.prototype.slice.call(cal.querySelectorAll("button.day"));
+  var start = null, end = null;
+
+  function utc(iso) {
+    var p = iso.split("-");
+    return Date.UTC(+p[0], +p[1] - 1, +p[2]);
+  }
+  function nights(a, b) { return Math.round((utc(b) - utc(a)) / 86400000); }
+  function pretty(iso) {
+    return new Date(utc(iso)).toLocaleDateString("fr-FR",
+      { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+  }
+  function paint(hover) {
+    var last = end || hover || null;
+    days.forEach(function (b) {
+      var d = b.dataset.date;
+      var inRange = start && last && d > start && d < last;
+      b.classList.toggle("sel-start", d === start);
+      b.classList.toggle("sel-end", d === end);
+      b.classList.toggle("in-range", !!inRange);
+      b.setAttribute("aria-pressed", (d === start || d === end) ? "true" : "false");
+    });
+  }
+  function refresh() {
+    panel.hidden = !(start && end);
+    if (!start) {
+      hint.textContent = "Cliquez sur le jour d’arrivée, puis sur le jour de départ.";
+    } else if (!end) {
+      hint.textContent = "Arrivée : " + pretty(start) + ". Cliquez maintenant sur le jour de départ.";
+    } else {
+      var n = nights(start, end);
+      hint.textContent = "Cliquez sur un autre jour pour recommencer.";
+      text.textContent = "Du " + pretty(start) + " au " + pretty(end) +
+                         " (" + n + " nuit" + (n > 1 ? "s" : "") + ")";
+      inStart.value = start;
+      inEnd.value = end;
+      var tooLong = n > MAX_NIGHTS;
+      warning.hidden = !tooLong;
+      warning.textContent = tooLong ? "Une période ne peut pas dépasser " + MAX_NIGHTS + " nuits." : "";
+      submit.disabled = tooLong;
+    }
+  }
+  cal.addEventListener("click", function (e) {
+    var b = e.target.closest("button.day");
+    if (!b || b.disabled) return;
+    var d = b.dataset.date;
+    if (!start || end) { start = d; end = null; }
+    else if (d < start) { start = d; }
+    else { end = d; }
+    paint();
+    refresh();
+  });
+  cal.addEventListener("mouseover", function (e) {
+    if (!start || end) return;
+    var b = e.target.closest("button.day");
+    if (b && !b.disabled) paint(b.dataset.date);
+  });
+  cal.addEventListener("mouseleave", function () { if (start && !end) paint(); });
+  document.getElementById("pick-cancel").addEventListener("click", function () {
+    start = end = null;
+    paint();
+    refresh();
+  });
+})();
+</script>
 {% endblock %}

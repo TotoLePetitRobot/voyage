@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Modifier la période</h1>
+{% if votes %}
+<p class="notice">{{ votes }} vote{{ votes|pluralize }} déjà enregistré{{ votes|pluralize }} pour cette période. Changer les dates ne supprime pas les votes, sauf si vous cochez la case ci-dessous : à vous de juger si les personnes ont voté pour les dates d’origine.</p>
+{% endif %}
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
+<p><a href="{% url 'date_list' trip.pk %}">Retour aux périodes</a></p>
+{% endblock %}
