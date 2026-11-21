@@ -7,7 +7,7 @@
 {% for p in polls %}
   <div class="card">
     <h3><a href="{% url 'poll_detail' p.pk %}">{{ p.question }}</a>{% if p.is_closed %} <span class="badge">Clôturé</span>{% endif %}</h3>
-    <small>{{ p.get_kind_display }} · {{ p.voters }} votant{{ p.voters|pluralize }}{% if p.created_by %} · par {{ p.created_by.label }}{% endif %}</small>
+    <small>{{ p.get_kind_display }} · {{ p.voters }} votant{{ p.voters|pluralize }}</small>
   </div>
 {% empty %}
   <p>Aucun sondage pour l’instant.</p>

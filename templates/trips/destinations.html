@@ -15,9 +15,8 @@
 <details class="card accordion" id="dest-{{ d.pk }}">
   <summary>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</summary>
   <div class="accordion-body">
-    {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}
-    {% if d.stations %}<p><small>Gares : {{ d.stations|join:" · " }}</small></p>{% endif %}
-    {% if d.notes %}<p>{{ d.notes|linebreaksbr }}</p>{% endif %}
+    {% if d.stations %}<p>Gares : {{ d.stations|join:" · " }}</p>{% endif %}
+    {% if d.notes %}<p><small>{{ d.notes|linebreaksbr }}</small></p>{% endif %}
     {% if d.extra_info %}
       <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
     {% endif %}
