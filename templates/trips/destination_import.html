@@ -7,5 +7,5 @@ Villard-de-Lans;Grenoble|Valence TGV;;Navettes depuis les deux gares;;
 Lisbonne;;;Escapade ville;;</pre>
 <p>Depuis Excel : « Enregistrer sous » puis « CSV UTF-8 ». Les noms déjà présents sont ignorés. Plusieurs gares dans une cellule : séparez-les par |.</p>
 <form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button>Importer</button></form>
-<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+<p><a href="{% url 'destination_list' trip.pk %}">Retour aux destinations</a></p>
 {% endblock %}

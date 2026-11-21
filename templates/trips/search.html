@@ -68,5 +68,5 @@
 {% endfor %}
 <p><small>Les liens Google Maps donnent les itinéraires et les durées, pas les prix des billets ni la date. Pour SNCF Connect, si la phrase est mal comprise, utilisez la recherche détaillée du site.</small></p>
 
-<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+<p><a href="{% url 'destination_list' trip.pk %}">Retour aux destinations</a></p>
 {% endblock %}

@@ -66,7 +66,6 @@ def trip_detail(request, pk):
         "trip": trip,
         "me": me,
         "members": trip.members.select_related("user"),
-        "destinations": trip.destinations.select_related("proposed_by__user"),
         "form": form,
         "invite_url": invite_url,
     })
@@ -97,7 +96,7 @@ def destination_add(request, pk):
         dest.trip = trip
         dest.proposed_by = me
         dest.save()
-        return redirect("trip_detail", pk=trip.pk)
+        return redirect(f"{reverse('destination_list', args=[trip.pk])}#dest-{dest.pk}")
     return render(request, "trips/destination_form.html",
                   {"form": form, "trip": trip, "title": "Nouvelle destination"})
 
@@ -108,7 +107,7 @@ def destination_edit(request, dest_pk):
     form = DestinationForm(request.POST or None, instance=dest)
     if request.method == "POST" and form.is_valid():
         form.save()
-        return redirect("trip_detail", pk=dest.trip_id)
+        return redirect(f"{reverse('destination_list', args=[dest.trip_id])}#dest-{dest.pk}")
     return render(request, "trips/destination_form.html",
                   {"form": form, "trip": dest.trip, "title": f"Modifier : {dest.name}"})
 
@@ -122,7 +121,7 @@ def destination_delete(request, dest_pk):
         raise PermissionDenied
     trip_pk = dest.trip_id
     dest.delete()
-    return redirect("trip_detail", pk=trip_pk)
+    return redirect("destination_list", pk=trip_pk)
 
 
 @login_required
@@ -155,7 +154,7 @@ def destination_import(request, pk):
                 request,
                 f"{len(new)} destination(s) importée(s), {len(rows) - len(new)} ignorée(s) (déjà présentes).",
             )
-            return redirect("trip_detail", pk=trip.pk)
+        return redirect("destination_list", pk=trip.pk)
     return render(request, "trips/destination_import.html", {"form": form, "trip": trip})
 
 MAX_DATE_OPTIONS = 26
@@ -904,3 +903,12 @@ def lodging_delete(request, lodging_pk):
     lodging, trip = _lodging_for_member(request, lodging_pk)
     lodging.delete()
     return redirect("lodgings", pk=trip.pk)
+
+
+@login_required
+def destination_list(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    items = list(trip.destinations.select_related("proposed_by"))
+    for d in items:
+        d.can_delete = me.can_manage or d.proposed_by_id == me.pk
+    return render(request, "trips/destinations.html", {"trip": trip, "destinations": items})

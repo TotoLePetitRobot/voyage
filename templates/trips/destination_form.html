@@ -2,5 +2,5 @@
 {% block content %}
 <h1>{{ title }}</h1>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
-<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+<p><a href="{% url 'destination_list' trip.pk %}">Retour aux destinations</a></p>
 {% endblock %}

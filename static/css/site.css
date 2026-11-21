@@ -127,3 +127,12 @@ form[action*="s-ajouter"] button { padding: 6px 12px; font-size: 14px; }
 .podium li { counter-increment: rank; position: relative; }
 .podium li.card { padding-left: 56px; }
 .podium li::before { content: counter(rank); position: absolute; left: 14px; top: 14px; width: 28px; height: 28px; border-radius: 50%; background: var(--brand); color: var(--brand-ink); display: grid; place-items: center; font-weight: 700; }
+
+details.accordion > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 700; color: var(--ink); }
+details.accordion > summary::-webkit-details-marker { display: none; }
+details.accordion > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+details.accordion[open] > summary::before { transform: rotate(90deg); }
+details.accordion > summary a { color: var(--brand); }
+.accordion-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.toolbar { display: flex; gap: 8px; }
+

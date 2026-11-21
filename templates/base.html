@@ -22,7 +22,8 @@
 {% if trip.pk %}
 {% with n=request.resolver_match.url_name %}
 <nav class="tabs" aria-label="Sections du voyage"><div class="in">
-  <a href="{% url 'trip_detail' trip.pk %}"{% if n == 'trip_detail' or n == 'search' or n == 'destination_add' or n == 'destination_edit' or n == 'destination_import' %} aria-current="page"{% endif %}>Voyage</a>
+  <a href="{% url 'trip_detail' trip.pk %}"{% if n == 'trip_detail' or n == 'roles' %} aria-current="page"{% endif %}>Voyage</a>
+  <a href="{% url 'destination_list' trip.pk %}"{% if n == 'destination_list' or n == 'search' or n == 'destination_add' or n == 'destination_edit' or n == 'destination_import' %} aria-current="page"{% endif %}>Destinations</a>
   <a href="{% url 'date_list' trip.pk %}"{% if n == 'date_list' %} aria-current="page"{% endif %}>Dates</a>
   <a href="{% url 'lodgings' trip.pk %}"{% if n == 'lodgings' or n == 'lodging_add' or n == 'lodging_edit' %} aria-current="page"{% endif %}>Logements</a>
   <a href="{% url 'legs' trip.pk %}"{% if n == 'legs' or n == 'leg_add' or n == 'leg_edit' %} aria-current="page"{% endif %}>Trajets</a>

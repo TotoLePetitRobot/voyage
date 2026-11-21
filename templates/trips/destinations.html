@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Destinations – {{ trip.name }}</h1>
+<p><a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a> ·
+   <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a></p>
+
+{% if destinations %}
+<p class="toolbar">
+  <button type="button" id="expand-all">Tout déplier</button>
+  <button type="button" id="collapse-all">Tout replier</button>
+</p>
+{% endif %}
+
+{% for d in destinations %}
+<details class="card accordion" id="dest-{{ d.pk }}">
+  <summary>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</summary>
+  <div class="accordion-body">
+    {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}
+    {% if d.stations %}<p><small>Gares : {{ d.stations|join:" · " }}</small></p>{% endif %}
+    {% if d.notes %}<p>{{ d.notes|linebreaksbr }}</p>{% endif %}
+    {% if d.extra_info %}
+      <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
+    {% endif %}
+    <p>
+      <a href="{% url 'search' trip.pk d.pk %}">Logements et trajets</a> ·
+      <a href="{% url 'destination_edit' d.pk %}">Modifier</a>
+      {% if d.can_delete %}
+        <form method="post" action="{% url 'destination_delete' d.pk %}" style="display:inline"
+              onsubmit="return confirm('Supprimer cette destination ?')">{% csrf_token %}<button>Supprimer</button></form>
+      {% endif %}
+    </p>
+  </div>
+</details>
+{% empty %}
+  <p>Aucune destination pour l’instant.</p>
+{% endfor %}
+
+<script>
+(function () {
+  var items = function () { return document.querySelectorAll("details.accordion"); };
+  var expand = document.getElementById("expand-all");
+  var collapse = document.getElementById("collapse-all");
+  if (expand) expand.addEventListener("click", function () {
+    items().forEach(function (d) { d.open = true; });
+  });
+  if (collapse) collapse.addEventListener("click", function () {
+    items().forEach(function (d) { d.open = false; });
+  });
+  if (location.hash.indexOf("#dest-") === 0) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") { target.open = true; target.scrollIntoView(); }
+  }
+})();
+</script>
+{% endblock %}

@@ -1171,3 +1171,71 @@ class AccountantAndAgentRoleTests(TestCase):
             f"roles_{self.m['target'].pk}": ["accountant", "agent", "coorganizer"]})
         self.m["target"].refresh_from_db()
         self.assertEqual(sorted(self.m["target"].roles), ["accountant", "agent"])
+
+
+class DestinationPageTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "owner", "simple", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        self.m = {n: Member.objects.create(trip=self.trip, display_name=n.title(),
+                                           user=self.users[n], is_organizer=(n == "orga"))
+                  for n in names[:3]}
+        self.cham = Destination.objects.create(
+            trip=self.trip, name="Chamonix", url="https://exemple.fr/cham",
+            notes="Vue sur le Mont-Blanc", proposed_by=self.m["owner"])
+        self.lisbonne = Destination.objects.create(trip=self.trip, name="Lisbonne",
+                                                   proposed_by=self.m["owner"])
+        self.url = reverse("destination_list", args=[self.trip.pk])
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def test_collapsed_line_shows_name_and_link_only_when_filled(self):
+        self.as_user("simple")
+        r = self.client.get(self.url)
+        self.assertContains(r, '<summary><a href="https://exemple.fr/cham"')
+        self.assertContains(r, "<summary>Lisbonne</summary>")
+
+    def test_each_destination_is_a_foldable_block_with_details_inside(self):
+        self.as_user("simple")
+        r = self.client.get(self.url)
+        self.assertContains(r, f'<details class="card accordion" id="dest-{self.cham.pk}">')
+        self.assertContains(r, "Vue sur le Mont-Blanc")
+
+    def test_trip_page_no_longer_lists_destinations(self):
+        self.as_user("simple")
+        r = self.client.get(reverse("trip_detail", args=[self.trip.pk]))
+        self.assertNotContains(r, "Chamonix")
+        self.assertContains(r, f'href="{self.url}"')
+
+    def test_add_and_edit_return_to_the_page_with_the_block_open(self):
+        self.as_user("simple")
+        data = {"name": "Valence", "nearest_station": "", "url": "", "notes": "", "extra_text": ""}
+        r = self.client.post(reverse("destination_add", args=[self.trip.pk]), data)
+        valence = Destination.objects.get(name="Valence")
+        self.assertRedirects(r, f"{self.url}#dest-{valence.pk}", fetch_redirect_response=False)
+        r = self.client.post(reverse("destination_edit", args=[valence.pk]),
+                             {**data, "notes": "Gare TGV"})
+        self.assertRedirects(r, f"{self.url}#dest-{valence.pk}", fetch_redirect_response=False)
+
+    def test_delete_rights_and_redirect(self):
+        delete = reverse("destination_delete", args=[self.lisbonne.pk])
+        self.as_user("simple")
+        self.assertEqual(self.client.post(delete).status_code, 403)
+        self.as_user("owner")
+        r = self.client.post(delete)
+        self.assertRedirects(r, self.url, fetch_redirect_response=False)
+        self.assertFalse(Destination.objects.filter(pk=self.lisbonne.pk).exists())
+
+    def test_delete_button_only_for_proposer_or_manager(self):
+        self.as_user("simple")
+        self.assertNotContains(self.client.get(self.url), "supprimer")
+        self.as_user("orga")
+        self.assertContains(self.client.get(self.url), "supprimer")
+
+    def test_outsider_gets_404(self):
+        self.as_user("stranger")
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+

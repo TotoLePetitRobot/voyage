@@ -40,4 +40,5 @@ urlpatterns = [
     path("destinations/<int:dest_pk>/logements/nouveau/", views.lodging_add, name="lodging_add"),
     path("logements/<int:lodging_pk>/modifier/", views.lodging_edit, name="lodging_edit"),
     path("logements/<int:lodging_pk>/supprimer/", views.lodging_delete, name="lodging_delete"),
+    path("voyages/<int:pk>/destinations/", views.destination_list, name="destination_list"),
 ]
