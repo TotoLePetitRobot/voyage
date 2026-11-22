@@ -1542,15 +1542,29 @@ class CalendarWindowTests(TestCase):
         self.tables(mois=3)
         self.assertEqual(self.tables()[0], 3)
 
-    def test_navigation_links(self):
+    def test_navigation_links_move_by_one_month(self):
         _, html = self.tables(mois=6)
-        self.assertIn("decalage=6", html)
-        self.assertNotIn("Mois précédents", html)
-        _, html = self.tables(mois=6, decalage=6)
-        self.assertIn("Mois précédents", html)
-        self.assertIn("decalage=0", html)
+        self.assertIn("decalage=1", html)
+        self.assertNotIn("Mois précédent", html)
+        _, html = self.tables(mois=6, decalage=5)
+        self.assertIn("decalage=4", html)      # lien précédent
+        self.assertIn("decalage=6", html)      # lien suivant
         _, html = self.tables(mois=6, decalage=24)
-        self.assertNotIn("Mois suivants", html)
+        self.assertNotIn("Mois suivant", html)
+        self.assertIn("decalage=23", html)
+
+    def test_next_shifts_the_window_by_exactly_one_month(self):
+        def captions(**params):
+            html = self.client.get(self.url, params).content.decode()
+            return re.findall(r"<caption>(.*?)</caption>", html)
+
+        first = captions(mois=3, decalage=0)
+        shifted = captions(mois=3, decalage=1)
+        self.assertEqual(shifted[:2], first[1:])
+
+    def test_changing_the_number_of_months_keeps_the_start_month(self):
+        _, html = self.tables(mois=6, decalage=3)
+        self.assertIn('name="decalage" value="3"', html)
 
     def test_odd_offsets_do_not_crash(self):
         for bad in ("²", "x", "99999", "-4"):

@@ -207,8 +207,9 @@ def date_list(request, pk):
         "trip": trip, "me": me, "form": form, "months": months, "legend": legend,
         "months_shown": shown,
         "month_choices": sorted(set(MONTH_CHOICES) | {shown}),
-        "prev_offset": max(offset - shown, 0) if offset > 0 else None,
-        "next_offset": offset + shown if offset + shown <= MAX_CALENDAR_OFFSET else None,
+        "offset": offset,
+        "prev_offset": offset - 1 if offset > 0 else None,
+        "next_offset": offset + 1 if offset + 1 <= MAX_CALENDAR_OFFSET else None,
         "range_label": f"{months[0]['title']} – {months[-1]['title']}",
     })
 

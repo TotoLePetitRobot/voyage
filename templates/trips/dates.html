@@ -6,6 +6,7 @@
 
 <h2>Proposer une période sur le calendrier</h2>
 <form method="get" class="calendar-controls">
+  <input type="hidden" name="decalage" value="{{ offset }}">
   <label>Mois affichés
     <select name="mois" onchange="this.form.submit()">
       {% for n in month_choices %}<option value="{{ n }}"{% if n == months_shown %} selected{% endif %}>{{ n }}</option>{% endfor %}
@@ -13,8 +14,8 @@
   </label>
   <noscript><button>Afficher</button></noscript>
   <span>{{ range_label }}</span>
-  {% if prev_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ prev_offset }}">◂ Mois précédents</a>{% endif %}
-  {% if next_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ next_offset }}">Mois suivants ▸</a>{% endif %}
+  {% if prev_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ prev_offset }}">◂ Mois précédent</a>{% endif %}
+  {% if next_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ next_offset }}">Mois suivant ▸</a>{% endif %}
 </form>
 <p id="pick-hint" class="pick-hint" aria-live="polite">Cliquez sur le jour d’arrivée, puis sur le jour de départ.</p>
 <div id="pick-panel" class="pick-panel" hidden>
