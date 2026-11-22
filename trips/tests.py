@@ -17,10 +17,11 @@ from django.utils import timezone as djtz
 from .backup import backup_sqlite
 from .calendar_utils import build_calendar
 from .importers import parse_destinations
+from .leg_utils import leg_key, normalize_place, sort_key
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
                      MealItem, Member, SolidarityPref, Trip, Leg, DateVote,
-                     DestVote, Lodging, Poll, PollOption, PollVote)
+                     DestVote, Lodging, Poll, PollOption, PollVote, LegParticipant)
 from .periods import parse_periods, check_period
 from .polls import parse_options, tally, votes_from_post
 from .ranking import summarize, top_pairs
@@ -572,6 +573,33 @@ class RoleTests(TestCase):
         self.assertFalse(Expense.objects.filter(pk=expense.pk).exists())
 
 
+class LegIdentityTests(SimpleTestCase):
+    def test_normalize_place(self):
+        for a, b in [("Chambéry", "  chambery "), ("Saint-Étienne", "SAINT ETIENNE"),
+                     ("Paris – Gare de Lyon", "paris gare de lyon"), ("Grenoble", "GRENOBLE.")]:
+            self.assertEqual(normalize_place(a), normalize_place(b))
+        self.assertNotEqual(normalize_place("Paris"), normalize_place("Pau"))
+        self.assertEqual(normalize_place(None), "")
+
+    def test_leg_key(self):
+        t = djtz.make_aware(datetime(2027, 2, 6, 8, 30))
+        base = ("out", "train", "Paris", t, "Grenoble", t + timedelta(hours=3))
+        same = ("out", "train", " paris ", t, "GRENOBLE", t + timedelta(hours=3))
+        self.assertEqual(leg_key(*base), leg_key(*same))
+        for changed in [("back",) + base[1:], (base[0], "bus") + base[2:],
+                        base[:3] + (t + timedelta(minutes=1),) + base[4:],
+                        base[:4] + ("Lyon", base[5]), base[:5] + (None,)]:
+            self.assertNotEqual(leg_key(*base), leg_key(*changed))
+
+    def test_sort_key(self):
+        t = djtz.make_aware(datetime(2027, 2, 6, 8, 30))
+        legs = [SimpleNamespace(pk=3, departure_at=None),
+                SimpleNamespace(pk=1, departure_at=t + timedelta(hours=5)),
+                SimpleNamespace(pk=2, departure_at=t),
+                SimpleNamespace(pk=4, departure_at=None)]
+        self.assertEqual([l.pk for l in sorted(legs, key=sort_key)], [2, 1, 3, 4])
+
+
 class LegTests(TestCase):
     def setUp(self):
         U = get_user_model()
@@ -582,51 +610,275 @@ class LegTests(TestCase):
         for n in names[:-1]:
             self.m[n] = Member.objects.create(trip=self.trip, display_name=n.title(),
                                               user=self.users[n], is_organizer=(n == "orga"))
-
-    def leg(self, **kw):
-        data = dict(trip=self.trip, name="Train Paris–Grenoble", transport="train",
-                    departure_place="Paris", arrival_place="Grenoble", direction="out",
-                    position=1, proposed_by=self.m["dora"])
-        data.update(kw)
-        return Leg.objects.create(**data)
-
-    def car(self, seats=2):
-        return self.leg(name="Voiture", transport="car", seats=seats)
+        self.depart = djtz.make_aware(datetime(2027, 2, 6, 8, 30))
+        self.arrive = djtz.make_aware(datetime(2027, 2, 6, 11, 45))
 
     def as_user(self, name):
         self.client.force_login(self.users[name])
 
+    def train(self, price=None, **kw):
+        data = dict(trip=self.trip, name="Train Paris–Grenoble", transport="train",
+                    departure_place="Paris", arrival_place="Grenoble", direction="out",
+                    departure_at=self.depart, arrival_at=self.arrive,
+                    proposed_by=self.m["dora"])
+        data.update(kw)
+        leg = Leg.objects.create(**data)
+        LegParticipant.objects.create(leg=leg, member=self.m["dora"], price=price)
+        return leg
+
+    def car(self, seats=2, **kw):
+        data = dict(trip=self.trip, name="Voiture", transport="car", seats=seats,
+                    departure_place="Paris", arrival_place="Grenoble", direction="out",
+                    proposed_by=self.m["dora"])
+        data.update(kw)
+        return Leg.objects.create(**data)
+
     def payload(self, **kw):
-        data = {"direction": "out", "position": 1, "name": "Train", "transport": "train",
-                "departure_place": "Paris", "arrival_place": "Grenoble",
+        data = {"direction": "out", "name": "Train", "transport": "train",
+                "departure_place": "Paris", "departure_at": "2027-02-06T08:30",
+                "arrival_place": "Grenoble", "arrival_at": "2027-02-06T11:45",
                 "status": "planned"}
         data.update(kw)
         return data
 
-    def test_add_two_legs_in_order(self):
+    def add_url(self):
+        return reverse("leg_add", args=[self.trip.pk])
+
+    def prices(self, leg):
+        return {p.member_id: p.price for p in leg.participations.all()}
+
+    # --- création, trajets identiques, « Prendre ce trajet » -----------------------------
+
+    def test_creating_a_train_makes_the_creator_a_participant_with_their_price(self):
         self.as_user("dora")
-        url = reverse("leg_add", args=[self.trip.pk])
-        self.client.post(url, self.payload(name="Navette Grenoble–Chamrousse", position=2))
-        self.client.post(url, self.payload(name="Train Paris–Grenoble", position=1))
-        page = self.client.get(reverse("legs", args=[self.trip.pk])).content.decode()
-        self.assertLess(page.index("Train Paris–Grenoble"),
-                        page.index("Navette Grenoble–Chamrousse"))
+        r = self.client.post(self.add_url(), self.payload(price="45.50"))
+        self.assertEqual(r.status_code, 302)
+        leg = Leg.objects.get()
+        self.assertIsNone(leg.price)
+        self.assertEqual(self.prices(leg), {self.m["dora"].pk: Decimal("45.50")})
+        page = self.client.get(reverse("legs", args=[self.trip.pk]))
+        self.assertContains(page, "Dora")
+        self.assertContains(page, "45,50")
+        self.assertNotContains(page, "Proposé par")
+
+    def test_identical_trip_adds_the_member_without_creating_a_new_leg(self):
+        leg = self.train(price=Decimal("40"))
+        self.as_user("alice")
+        r = self.client.post(self.add_url(),
+                             self.payload(name="TGV 6601", status="confirmed", price="38"))
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(Leg.objects.count(), 1)
+        leg.refresh_from_db()
+        self.assertEqual((leg.name, leg.status), ("Train Paris–Grenoble", "planned"))
+        self.assertEqual(self.prices(leg), {self.m["dora"].pk: Decimal("40"),
+                                            self.m["alice"].pk: Decimal("38")})
+
+    def test_places_are_compared_ignoring_case_accents_and_spacing(self):
+        leg = self.train(departure_place="Chambéry", arrival_place="Saint-Étienne")
+        self.as_user("alice")
+        self.client.post(self.add_url(), self.payload(departure_place="  chambery ",
+                                                      arrival_place="SAINT ETIENNE"))
+        self.assertEqual(Leg.objects.count(), 1)
+        self.assertEqual(leg.participations.count(), 2)
+
+    def test_a_different_time_direction_or_transport_creates_a_new_leg(self):
+        self.train()
+        self.as_user("alice")
+        self.client.post(self.add_url(), self.payload(departure_at="2027-02-06T09:30"))
+        self.client.post(self.add_url(), self.payload(direction="back"))
+        self.client.post(self.add_url(), self.payload(transport="shuttle"))
+        self.assertEqual(Leg.objects.count(), 4)
+
+    def test_identical_cars_are_never_merged(self):
+        self.car()
+        self.as_user("alice")
+        self.client.post(self.add_url(), self.payload(
+            name="Ma voiture", transport="car", seats=3, price="8"))
+        self.assertEqual(Leg.objects.count(), 2)
+        mine = Leg.objects.get(name="Ma voiture")
+        self.assertEqual(mine.price, Decimal("8"))
+        self.assertEqual(mine.participations.count(), 0)
+
+    def test_taking_twice_only_updates_the_price(self):
+        leg = self.train()
+        self.as_user("alice")
+        self.client.post(self.add_url(), self.payload(price="10"))
+        self.client.post(self.add_url(), self.payload(price="12"))
+        self.assertEqual(leg.participations.count(), 2)
+        self.assertEqual(self.prices(leg)[self.m["alice"].pk], Decimal("12"))
+
+    def test_take_this_trip_button_and_prefilled_form(self):
+        leg = self.train()
+        self.as_user("alice")
+        page = self.client.get(reverse("legs", args=[self.trip.pk]))
+        self.assertContains(page, "Prendre ce trajet")
+        self.assertContains(page, f"?from={leg.pk}")
+        form = self.client.get(self.add_url(), {"from": leg.pk})
+        for expected in ('value="Paris"', 'value="Grenoble"', 'value="2027-02-06T08:30"'):
+            self.assertContains(form, expected)
+        self.assertNotContains(form, 'name="price" value')
+
+    def test_participants_do_not_see_the_take_button(self):
+        self.train()
+        self.as_user("dora")
+        page = self.client.get(reverse("legs", args=[self.trip.pk]))
+        self.assertNotContains(page, "?from=")
+        self.assertContains(page, "Me retirer")
+
+    def test_prefill_ignores_cars_foreign_legs_and_unknown_ids(self):
+        car = self.car()
+        other = Trip.objects.create(name="Autre")
+        foreign = Leg.objects.create(trip=other, name="Étranger", transport="train",
+                                     departure_place="Rome", arrival_place="Milan",
+                                     direction="out")
+        self.as_user("alice")
+        for pk in (car.pk, foreign.pk, 99999):
+            r = self.client.get(self.add_url(), {"from": pk})
+            self.assertNotContains(r, 'value="Rome"')
+            self.assertNotContains(r, 'value="Paris"')
+
+    # --- prix personnel, départ, retrait ---------------------------------------------------
+
+    def test_participant_can_set_and_clear_their_own_price(self):
+        leg = self.train()
+        self.as_user("dora")
+        url = reverse("leg_price", args=[leg.pk])
+        self.client.post(url, {"price": "42,5"})
+        self.assertEqual(leg.participations.get().price, Decimal("42.50"))
+        for bad in ("abc", "-3", "NaN", "Infinity", "1e999", "9999999"):
+            self.client.post(url, {"price": bad})
+            self.assertEqual(leg.participations.get().price, Decimal("42.50"), bad)
+        self.client.post(url, {"price": ""})
+        self.assertIsNone(leg.participations.get().price)
+
+    def test_non_participant_cannot_set_a_price(self):
+        leg = self.train()
+        self.as_user("alice")
+        self.client.post(reverse("leg_price", args=[leg.pk]), {"price": "10"})
+        self.assertEqual(leg.participations.count(), 1)
+
+    def test_leaving_and_empty_legs_are_deleted(self):
+        leg = self.train()
+        LegParticipant.objects.create(leg=leg, member=self.m["alice"])
+        self.as_user("alice")
+        self.client.post(reverse("leg_leave", args=[leg.pk]))
+        self.assertEqual(leg.participations.count(), 1)
+        self.as_user("dora")
+        self.client.post(reverse("leg_leave", args=[leg.pk]))
+        self.assertEqual(Leg.objects.count(), 0)
+
+    def test_a_non_participant_cannot_delete_an_empty_leg_by_leaving(self):
+        leg = Leg.objects.create(trip=self.trip, name="Orphelin", transport="train",
+                                 departure_place="A", arrival_place="B", direction="out")
+        self.as_user("alice")
+        self.client.post(reverse("leg_leave", args=[leg.pk]))
+        self.assertTrue(Leg.objects.filter(pk=leg.pk).exists())
+
+    def test_remove_participant_permissions(self):
+        leg = self.train()
+        for n in ("alice", "bob", "carl"):
+            LegParticipant.objects.create(leg=leg, member=self.m[n])
+        url = reverse("leg_remove", args=[leg.pk])
+        self.as_user("bob")
+        self.assertEqual(self.client.post(url, {"member_id": self.m["alice"].pk}).status_code, 403)
+        self.as_user("dora")
+        self.client.post(url, {"member_id": self.m["alice"].pk})
+        self.as_user("orga")
+        self.client.post(url, {"member_id": self.m["bob"].pk})
+        self.assertEqual({p.member_id for p in leg.participations.all()},
+                         {self.m["dora"].pk, self.m["carl"].pk})
+
+    # --- modification --------------------------------------------------------------------
+
+    def test_cannot_switch_between_car_and_other_transports_but_train_to_shuttle_is_fine(self):
+        car, train = self.car(), self.train()
+        self.as_user("dora")
+        r = self.client.post(reverse("leg_edit", args=[car.pk]),
+                             self.payload(name="Voiture", transport="train"))
+        self.assertEqual(r.status_code, 200)
+        r = self.client.post(reverse("leg_edit", args=[train.pk]),
+                             self.payload(transport="car", seats=3))
+        self.assertEqual(r.status_code, 200)
+        car.refresh_from_db()
+        train.refresh_from_db()
+        self.assertEqual((car.transport, train.transport), ("car", "train"))
+        r = self.client.post(reverse("leg_edit", args=[train.pk]),
+                             self.payload(transport="shuttle"))
+        self.assertEqual(r.status_code, 302)
+        train.refresh_from_db()
+        self.assertEqual(train.transport, "shuttle")
+
+    def test_editing_into_an_identical_leg_is_rejected(self):
+        self.train()
+        later = self.train(name="Plus tard", departure_at=self.depart + timedelta(hours=2),
+                           arrival_at=self.arrive + timedelta(hours=2))
+        self.as_user("dora")
+        r = self.client.post(reverse("leg_edit", args=[later.pk]), self.payload(name="Plus tard"))
+        self.assertEqual(r.status_code, 200)
+        later.refresh_from_db()
+        self.assertEqual(later.departure_at, self.depart + timedelta(hours=2))
+
+    def test_price_field_only_when_editing_cars(self):
+        train, car = self.train(), self.car()
+        self.as_user("dora")
+        self.assertNotContains(self.client.get(reverse("leg_edit", args=[train.pk])), 'name="price"')
+        self.assertContains(self.client.get(reverse("leg_edit", args=[car.pk])), 'name="price"')
+
+    def test_only_proposer_or_manager_can_edit_and_delete(self):
+        leg = self.train()
+        self.as_user("alice")
+        self.assertEqual(self.client.get(reverse("leg_edit", args=[leg.pk])).status_code, 403)
+        self.assertEqual(self.client.post(reverse("leg_delete", args=[leg.pk])).status_code, 403)
+        self.as_user("orga")
+        self.client.post(reverse("leg_delete", args=[leg.pk]))
+        self.assertEqual(Leg.objects.count(), 0)
+
+    # --- affichage ------------------------------------------------------------------------
+
+    def test_legs_are_listed_by_departure_time_with_unknown_times_last(self):
+        self.train(departure_place="Briancon", departure_at=self.depart + timedelta(hours=5),
+                   arrival_at=None)
+        self.train(departure_place="Chamonix", departure_at=None, arrival_at=None)
+        self.train(departure_place="Annecy")
+        self.as_user("alice")
+        html = self.client.get(reverse("legs", args=[self.trip.pk])).content.decode()
+        self.assertLess(html.index("Annecy"), html.index("Briancon"))
+        self.assertLess(html.index("Briancon"), html.index("Chamonix"))
+
+#    def test_legs_are_listed_by_departure_time_with_unknown_times_last(self):
+#        self.train(name="Second", departure_at=self.depart + timedelta(hours=5), arrival_at=None)
+#        self.train(name="Sans heure", departure_at=None, arrival_at=None,
+#                   departure_place="Lyon")
+#        self.train(name="Premier")
+#        self.as_user("alice")
+#        html = self.client.get(reverse("legs", args=[self.trip.pk])).content.decode()
+#        self.assertLess(html.index("Premier"), html.index("Second"))
+#        self.assertLess(html.index("Second"), html.index("Sans heure"))
+
+    def test_cars_show_the_driver_and_other_transports_show_participants(self):
+        self.train()
+        self.car()
+        self.as_user("alice")
+        page = self.client.get(reverse("legs", args=[self.trip.pk]))
+        self.assertContains(page, "Conducteur : Dora")
+        self.assertContains(page, "Participants")
+
+    # --- voitures (inchangé) -----------------------------------------------------------------
 
     def test_car_requires_seats(self):
         self.as_user("dora")
-        r = self.client.post(reverse("leg_add", args=[self.trip.pk]),
-                             self.payload(transport="car"))
+        r = self.client.post(self.add_url(), self.payload(transport="car"))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(Leg.objects.count(), 0)
 
     def test_non_car_ignores_seats(self):
         self.as_user("dora")
-        self.client.post(reverse("leg_add", args=[self.trip.pk]), self.payload(seats=3))
+        self.client.post(self.add_url(), self.payload(seats=3))
         self.assertIsNone(Leg.objects.get().seats)
 
     def test_arrival_before_departure_is_rejected(self):
         self.as_user("dora")
-        r = self.client.post(reverse("leg_add", args=[self.trip.pk]), self.payload(
+        r = self.client.post(self.add_url(), self.payload(
             departure_at="2027-02-06T10:00", arrival_at="2027-02-06T08:00"))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(Leg.objects.count(), 0)
@@ -639,24 +891,22 @@ class LegTests(TestCase):
         self.assertEqual(leg.passengers.count(), 2)
         self.assertFalse(leg.passengers.filter(pk=self.m["carl"].pk).exists())
 
-    def test_driver_cannot_join_own_car(self):
-        leg = self.car()
+    def test_driver_cannot_join_own_car_and_nobody_joins_a_train_as_passenger(self):
+        car, train = self.car(), self.train()
         self.as_user("dora")
-        self.client.post(reverse("leg_join", args=[leg.pk]))
-        self.assertEqual(leg.passengers.count(), 0)
-
-    def test_cannot_join_a_non_car_leg(self):
-        leg = self.leg()
+        self.client.post(reverse("leg_join", args=[car.pk]))
         self.as_user("alice")
-        self.client.post(reverse("leg_join", args=[leg.pk]))
-        self.assertEqual(leg.passengers.count(), 0)
+        self.client.post(reverse("leg_join", args=[train.pk]))
+        self.assertEqual(car.passengers.count(), 0)
+        self.assertEqual(train.passengers.count(), 0)
 
-    def test_leave(self):
+    def test_passenger_can_leave_a_car(self):
         leg = self.car()
         leg.passengers.add(self.m["alice"])
         self.as_user("alice")
         self.client.post(reverse("leg_leave", args=[leg.pk]))
         self.assertEqual(leg.passengers.count(), 0)
+        self.assertTrue(Leg.objects.filter(pk=leg.pk).exists())
 
     def test_remove_passenger_permissions(self):
         leg = self.car(seats=3)
@@ -680,40 +930,15 @@ class LegTests(TestCase):
         leg.refresh_from_db()
         self.assertEqual(leg.seats, 2)
 
-    def test_cannot_switch_from_car_while_passengers_are_registered(self):
-        leg = self.car()
-        leg.passengers.add(self.m["alice"])
-        self.as_user("dora")
-        r = self.client.post(reverse("leg_edit", args=[leg.pk]), self.payload(name="Voiture"))
-        self.assertEqual(r.status_code, 200)
-        leg.refresh_from_db()
-        self.assertEqual(leg.transport, "car")
-
-    def test_only_proposer_or_manager_can_edit_and_delete(self):
-        leg = self.leg()
-        self.as_user("alice")
-        self.assertEqual(self.client.get(reverse("leg_edit", args=[leg.pk])).status_code, 403)
-        self.assertEqual(self.client.post(reverse("leg_delete", args=[leg.pk])).status_code, 403)
-        self.as_user("orga")
-        self.client.post(reverse("leg_delete", args=[leg.pk]))
-        self.assertEqual(Leg.objects.count(), 0)
-
-    def test_warning_and_price_total(self):
-        make = djtz.make_aware
-        self.leg(position=1, price=Decimal("45.50"),
-                 arrival_at=make(datetime(2027, 2, 6, 12, 0)))
-        self.leg(name="Navette", position=2, price=Decimal("10"),
-                 departure_at=make(datetime(2027, 2, 6, 11, 0)))
-        self.as_user("alice")
-        page = self.client.get(reverse("legs", args=[self.trip.pk]))
-        self.assertContains(page, "part avant l’arrivée")
-        self.assertContains(page, "55,50")
-
     def test_outsider_gets_404(self):
-        leg = self.car()
+        leg, car = self.train(), self.car()
         self.as_user("stranger")
         self.assertEqual(self.client.get(reverse("legs", args=[self.trip.pk])).status_code, 404)
-        self.assertEqual(self.client.post(reverse("leg_join", args=[leg.pk])).status_code, 404)
+        self.assertEqual(self.client.get(f"{self.add_url()}?from={leg.pk}").status_code, 404)
+        for name, target in (("leg_join", car), ("leg_leave", leg), ("leg_price", leg)):
+            self.assertEqual(self.client.post(reverse(name, args=[target.pk])).status_code, 404, name)
+
+
 
 class HiddenExpenseTests(TestCase):
     def setUp(self):
@@ -1246,41 +1471,39 @@ class DestinationPageTests(TestCase):
 class CalendarTests(SimpleTestCase):
     TODAY = date(2026, 11, 20)
 
-    def test_without_periods_it_starts_this_month_for_12_months(self):
-        months, legend, truncated = build_calendar([], self.TODAY)
+    def test_window_starts_this_month(self):
+        months, legend = build_calendar([], self.TODAY, months_count=6)
+        self.assertEqual([m["title"] for m in months],
+                         ["novembre 2026", "décembre 2026", "janvier 2027",
+                          "février 2027", "mars 2027", "avril 2027"])
         self.assertEqual(legend, [])
-        self.assertEqual(len(months), 12)
-        self.assertEqual(months[0]["title"], "novembre 2026")
-        self.assertEqual(months[-1]["title"], "octobre 2027")
-        self.assertFalse(truncated)
+
+    def test_offset_and_size(self):
+        months, _ = build_calendar([], self.TODAY, months_count=3, offset=6)
+        self.assertEqual([m["title"] for m in months], ["mai 2027", "juin 2027", "juillet 2027"])
+        self.assertEqual(len(build_calendar([], self.TODAY, 24)[0]), 24)
+        self.assertEqual(len(build_calendar([], self.TODAY, 1)[0]), 1)
 
     def test_cells_have_iso_label_and_past_flag(self):
-        months, _, _ = build_calendar([], self.TODAY)
+        months, _ = build_calendar([], self.TODAY, 1)
         cells = {c["iso"]: c for w in months[0]["weeks"] for c in w if c}
         self.assertTrue(cells["2026-11-19"]["past"])
         self.assertFalse(cells["2026-11-20"]["past"])
         self.assertEqual(cells["2026-11-20"]["label"], "20 novembre 2026")
         self.assertEqual(len(cells), 30)
 
-    def test_periods_extend_the_range_and_mark_days(self):
-        options = [SimpleNamespace(start_date=date(2027, 12, 30), end_date=date(2028, 1, 2))]
-        months, legend, _ = build_calendar(options, self.TODAY)
-        self.assertEqual(months[-1]["title"], "janvier 2028")
+    def test_legend_keeps_all_periods_but_only_the_window_is_drawn(self):
+        options = [SimpleNamespace(start_date=date(2026, 12, 24), end_date=date(2026, 12, 27)),
+                   SimpleNamespace(start_date=date(2027, 8, 1), end_date=date(2027, 8, 5))]
+        months, legend = build_calendar(options, self.TODAY, months_count=3)
+        self.assertEqual([letter for letter, _ in legend], ["A", "B"])
         cells = {c["iso"]: c for m in months for w in m["weeks"] for c in w if c}
-        self.assertEqual(cells["2027-12-31"]["letters"], ["A"])
-        self.assertEqual(cells["2028-01-03"]["letters"], [])
-
-    def test_old_periods_are_shown_and_the_cap_applies(self):
-        options = [SimpleNamespace(start_date=date(2026, 9, 1), end_date=date(2026, 9, 5)),
-                   SimpleNamespace(start_date=date(2029, 1, 1), end_date=date(2029, 1, 5))]
-        months, _, truncated = build_calendar(options, self.TODAY)
-        self.assertEqual(months[0]["title"], "septembre 2026")
-        self.assertEqual(len(months), 24)
-        self.assertTrue(truncated)
+        self.assertEqual(cells["2026-12-25"]["letters"], ["A"])
+        self.assertNotIn("2027-08-01", cells)
 
     def test_year_wrap(self):
-        months, _, _ = build_calendar([], date(2026, 12, 5))
-        self.assertEqual([m["title"] for m in months[:2]], ["décembre 2026", "janvier 2027"])
+        months, _ = build_calendar([], date(2026, 12, 5), months_count=2)
+        self.assertEqual([m["title"] for m in months], ["décembre 2026", "janvier 2027"])
 
     def test_allow_past_option_of_check_period(self):
         today = date(2026, 11, 20)
@@ -1289,6 +1512,49 @@ class CalendarTests(SimpleTestCase):
                                        allow_past=True))
         self.assertIn("après", check_period(date(2026, 11, 5), date(2026, 11, 1), today,
                                             allow_past=True))
+
+
+class CalendarWindowTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.user = U.objects.create_user("anna", password="pw-test-123")
+        self.trip = Trip.objects.create(name="Test")
+        Member.objects.create(trip=self.trip, display_name="Anna", user=self.user)
+        self.url = reverse("date_list", args=[self.trip.pk])
+        self.client.force_login(self.user)
+
+    def tables(self, **params):
+        html = self.client.get(self.url, params).content.decode()
+        return html.count('<table class="cal">'), html
+
+    def test_default_is_six_months(self):
+        self.assertEqual(self.tables()[0], 6)
+
+    def test_mois_parameter_sets_the_number_of_months(self):
+        self.assertEqual(self.tables(mois=2)[0], 2)
+        self.assertEqual(self.tables(mois=24)[0], 24)
+
+    def test_invalid_values_fall_back_to_the_default(self):
+        for bad in ("abc", "0", "25", "-1", "²", "999999999"):
+            self.assertEqual(self.tables(mois=bad)[0], 6, bad)
+
+    def test_choice_is_remembered_in_the_session(self):
+        self.tables(mois=3)
+        self.assertEqual(self.tables()[0], 3)
+
+    def test_navigation_links(self):
+        _, html = self.tables(mois=6)
+        self.assertIn("decalage=6", html)
+        self.assertNotIn("Mois précédents", html)
+        _, html = self.tables(mois=6, decalage=6)
+        self.assertIn("Mois précédents", html)
+        self.assertIn("decalage=0", html)
+        _, html = self.tables(mois=6, decalage=24)
+        self.assertNotIn("Mois suivants", html)
+
+    def test_odd_offsets_do_not_crash(self):
+        for bad in ("²", "x", "99999", "-4"):
+            self.assertEqual(self.client.get(self.url, {"decalage": bad}).status_code, 200, bad)
 
 
 class PeriodEditTests(TestCase):
@@ -1486,7 +1752,7 @@ class PollViewTests(TestCase):
         votes = PollVote.objects.filter(member=self.m["voter"])
         self.assertEqual([v.option_id for v in votes], [b])
         self.client.post(url, {"choice": ""})
-        self.assertEqual(votes.count(), 0)
+        self.assertEqual(PollVote.objects.filter(member=self.m["voter"]).count(), 0)
 
     def test_multiple_choice_ignores_unknown_options(self):
         poll = self.poll("multiple")

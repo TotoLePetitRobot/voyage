@@ -5,6 +5,17 @@
 {% if form.non_field_errors %}<div class="notice">{{ form.non_field_errors }}</div>{% endif %}
 
 <h2>Proposer une période sur le calendrier</h2>
+<form method="get" class="calendar-controls">
+  <label>Mois affichés
+    <select name="mois" onchange="this.form.submit()">
+      {% for n in month_choices %}<option value="{{ n }}"{% if n == months_shown %} selected{% endif %}>{{ n }}</option>{% endfor %}
+    </select>
+  </label>
+  <noscript><button>Afficher</button></noscript>
+  <span>{{ range_label }}</span>
+  {% if prev_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ prev_offset }}">◂ Mois précédents</a>{% endif %}
+  {% if next_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ next_offset }}">Mois suivants ▸</a>{% endif %}
+</form>
 <p id="pick-hint" class="pick-hint" aria-live="polite">Cliquez sur le jour d’arrivée, puis sur le jour de départ.</p>
 <div id="pick-panel" class="pick-panel" hidden>
   <p><b id="pick-text"></b></p>
@@ -18,7 +29,6 @@
 </div>
 
 <div id="pick-calendar">{% include "trips/_calendar.html" %}</div>
-{% if truncated %}<p><small>Calendrier limité à 24 mois.</small></p>{% endif %}
 
 <h2>Périodes proposées</h2>
 <ul>

@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>{{ title }}</h1>
+{% if taking %}
+<p class="notice">Les informations du trajet sont déjà remplies. Indiquez votre prix si vous le souhaitez, puis enregistrez : vous serez ajouté à la liste des participants. Tant que le type, les lieux et les heures restent identiques, aucun nouveau trajet n’est créé.</p>
+{% endif %}
 <form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
 <p><a href="{% url 'legs' trip.pk %}">Retour aux trajets</a></p>
 {% endblock %}

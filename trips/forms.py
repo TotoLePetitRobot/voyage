@@ -312,8 +312,8 @@ class MealForm(forms.ModelForm):
 class LegForm(forms.ModelForm):
     class Meta:
         model = Leg
-        fields = ["direction", "position", "name", "transport", "departure_place",
-                  "departure_at", "arrival_place", "arrival_at", "price", "status", "seats"]
+        fields = ["direction", "name", "transport", "departure_place", "departure_at",
+                  "arrival_place", "arrival_at", "price", "status", "seats"]
         widgets = {
             "departure_at": forms.DateTimeInput(attrs={"type": "datetime-local"},
                                                 format="%Y-%m-%dT%H:%M"),
@@ -327,8 +327,13 @@ class LegForm(forms.ModelForm):
             self.fields[name].input_formats = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S",
                                                "%Y-%m-%d %H:%M"]
         self.fields["price"].widget.attrs.update(step="0.01", min="0")
+        self.fields["price"].label = "Prix (€, facultatif)"
+        self.fields["price"].help_text = ("Voiture : participation demandée à chaque passager. "
+                                          "Autres transports : votre propre prix.")
         self.fields["seats"].help_text = ("Seulement pour la voiture : nombre de places "
                                           "libres pour les autres membres.")
+        if self.instance.pk and not self.instance.is_car:
+            del self.fields["price"]    # le prix des autres transports est personnel
 
     def clean(self):
         cleaned = super().clean()
@@ -336,6 +341,10 @@ class LegForm(forms.ModelForm):
         if dep and arr and arr < dep:
             self.add_error("arrival_at", "L’arrivée doit être après le départ.")
         transport, seats = cleaned.get("transport"), cleaned.get("seats")
+        if self.instance.pk and transport and self.instance.is_car != (transport == "car"):
+            self.add_error("transport", "Pour passer d’une voiture à un autre transport "
+                                        "(ou l’inverse), supprimez ce trajet et recréez-le.")
+            return cleaned
         passengers = self.instance.passengers.count() if self.instance.pk else 0
         if transport == "car":
             if seats is None:
@@ -345,9 +354,6 @@ class LegForm(forms.ModelForm):
                                         "retirez-en d’abord.")
         elif transport:
             cleaned["seats"] = None
-            if passengers:
-                self.add_error("transport", "Retirez d’abord les passagers pour changer "
-                                            "de type de transport.")
         return cleaned
 
 _HTTP_URL = URLValidator(schemes=["http", "https"])

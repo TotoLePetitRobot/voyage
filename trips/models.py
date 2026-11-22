@@ -285,8 +285,6 @@ DIRECTION_CHOICES = [("out", "Aller"), ("back", "Retour")]
 class Leg(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="legs")
     direction = models.CharField("Sens", max_length=4, choices=DIRECTION_CHOICES, default="out")
-    position = models.PositiveSmallIntegerField(
-        "Étape n°", default=1, validators=[MinValueValidator(1), MaxValueValidator(20)])
     name = models.CharField("Nom", max_length=120, help_text="Exemple : Train Paris–Grenoble")
     transport = models.CharField("Type de transport", max_length=8,
                                  choices=TRANSPORT_CHOICES, default="train")
@@ -308,7 +306,7 @@ class Leg(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["position", "departure_at", "id"]
+        ordering = ["departure_at", "id"]
 
     @property
     def is_car(self):
@@ -322,6 +320,20 @@ class Leg(models.Model):
 
     def __str__(self):
         return self.name
+
+class LegParticipant(models.Model):
+    leg = models.ForeignKey(Leg, on_delete=models.CASCADE, related_name="participations")
+    member = models.ForeignKey(Member, on_delete=models.CASCADE,
+                               related_name="leg_participations")
+    price = models.DecimalField("Mon prix (€)", max_digits=8, decimal_places=2,
+                                null=True, blank=True, validators=[MinValueValidator(0)])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["leg", "member"], name="unique_leg_participant")
+        ]
 
 class Lodging(models.Model):
     destination = models.ForeignKey(Destination, on_delete=models.CASCADE,

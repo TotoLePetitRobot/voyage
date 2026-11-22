@@ -52,4 +52,5 @@ urlpatterns = [
     path("sondages/<int:poll_pk>/options/ajouter/", views.poll_option_add, name="poll_option_add"),
     path("sondages/options/<int:option_pk>/supprimer/", views.poll_option_delete,
          name="poll_option_delete"),
+    path("trajets/<int:leg_pk>/prix/", views.leg_price, name="leg_price"),
 ]

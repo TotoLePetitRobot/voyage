@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from statistics import median
 
 from django.contrib import messages
@@ -18,12 +18,13 @@ from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm,
                     MealForm, MemberForm, PseudoForm, SolidarityForm, TripForm,
                     LegForm, LodgingForm, PollEditForm, PollForm)
 from .importers import parse_destinations
+from .leg_utils import leg_key, sort_key
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
 from .middleware import PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
                      Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES, Poll,
-                     PollOption, PollVote)
+                     PollOption, PollVote, LegParticipant)
 from .periods import parse_periods
 from .polls import tally, votes_from_post
 from .ranking import summarize, top_pairs
@@ -162,6 +163,25 @@ def destination_import(request, pk):
 MAX_DATE_OPTIONS = 26
 MIN_ANONYMOUS_FOR_STATS = 3
 
+MONTH_CHOICES = [1, 2, 3, 4, 6, 9, 12, 18, 24]
+DEFAULT_MONTHS = 6
+MAX_CALENDAR_OFFSET = 24
+
+
+def _calendar_window(request):
+    """Nombre de mois affichés (mémorisé dans la session) et décalage du premier mois."""
+    asked = _int_or_none(request.GET.get("mois"))
+    if asked is not None and 1 <= asked <= 24:
+        request.session["calendar_months"] = asked
+        shown = asked
+    else:
+        stored = request.session.get("calendar_months")
+        shown = stored if isinstance(stored, int) and 1 <= stored <= 24 else DEFAULT_MONTHS
+    offset = _int_or_none(request.GET.get("decalage"))
+    if offset is None or offset > MAX_CALENDAR_OFFSET:
+        offset = 0
+    return shown, offset
+
 
 @login_required
 def date_list(request, pk):
@@ -181,11 +201,17 @@ def date_list(request, pk):
             opt.trip, opt.proposed_by = trip, me
             opt.save()
             return redirect("date_list", pk=trip.pk)
-    months, legend, truncated = build_calendar(options, timezone.localdate())
+    shown, offset = _calendar_window(request)
+    months, legend = build_calendar(options, timezone.localdate(), shown, offset)
     return render(request, "trips/dates.html", {
-        "trip": trip, "me": me, "form": form,
-        "months": months, "legend": legend, "truncated": truncated,
+        "trip": trip, "me": me, "form": form, "months": months, "legend": legend,
+        "months_shown": shown,
+        "month_choices": sorted(set(MONTH_CHOICES) | {shown}),
+        "prev_offset": max(offset - shown, 0) if offset > 0 else None,
+        "next_offset": offset + shown if offset + shown <= MAX_CALENDAR_OFFSET else None,
+        "range_label": f"{months[0]['title']} – {months[-1]['title']}",
     })
+
 
 @login_required
 def date_edit(request, opt_pk):
@@ -690,27 +716,59 @@ def roles(request, pk):
 MAX_LEGS = 40
 
 
+def _identical_leg(trip, data, exclude_pk=None):
+    wanted = leg_key(data["direction"], data["transport"], data["departure_place"],
+                     data.get("departure_at"), data["arrival_place"], data.get("arrival_at"))
+    for leg in trip.legs.exclude(transport="car"):
+        key = leg_key(leg.direction, leg.transport, leg.departure_place, leg.departure_at,
+                      leg.arrival_place, leg.arrival_at)
+        if leg.pk != exclude_pk and key == wanted:
+            return leg
+    return None
+
+
+def _join_leg(leg, member, price):
+    participation, created = LegParticipant.objects.get_or_create(
+        leg=leg, member=member, defaults={"price": price})
+    if not created and price is not None:
+        participation.price = price
+        participation.save(update_fields=["price"])
+
+
+def _drop_from_leg(leg, member):
+    """Retire un membre d'un trajet. Un trajet hors voiture qui n'a plus de participant
+    est supprimé (retourne True dans ce cas)."""
+    if leg.is_car:
+        leg.passengers.remove(member)
+        return False
+    removed = leg.participations.filter(member=member).delete()[0]
+    if removed and not leg.participations.exists():
+        leg.delete()
+        return True
+    return False
+
+
 @login_required
 def legs(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    all_legs = list(trip.legs.select_related("proposed_by").prefetch_related("passengers"))
+    all_legs = sorted(
+        trip.legs.select_related("proposed_by").prefetch_related(
+            "passengers", "participations__member"),
+        key=sort_key)
     sections = []
     for code, label in DIRECTION_CHOICES:
         items = [leg for leg in all_legs if leg.direction == code]
-        previous, total, has_price = None, Decimal("0"), False
         for leg in items:
             leg.can_edit = me.can_manage or leg.proposed_by_id == me.pk
-            leg.is_passenger = any(p.pk == me.pk for p in leg.passengers.all())
-            leg.can_join = (leg.is_car and not leg.is_passenger
-                            and leg.proposed_by_id != me.pk and (leg.seats_left or 0) > 0)
-            leg.warning = bool(previous and previous.arrival_at and leg.departure_at
-                               and leg.departure_at < previous.arrival_at)
-            if leg.price is not None:
-                total += leg.price
-                has_price = True
-            previous = leg
-        sections.append({"code": code, "label": label, "legs": items,
-                         "total": total if has_price else None})
+            if leg.is_car:
+                leg.is_passenger = any(p.pk == me.pk for p in leg.passengers.all())
+                leg.can_join = (not leg.is_passenger and leg.proposed_by_id != me.pk
+                                and (leg.seats_left or 0) > 0)
+            else:
+                leg.crew = list(leg.participations.all())
+                leg.my_participation = next(
+                    (p for p in leg.crew if p.member_id == me.pk), None)
+        sections.append({"code": code, "label": label, "legs": items})
     return render(request, "trips/legs.html", {"trip": trip, "sections": sections})
 
 
@@ -723,22 +781,40 @@ def leg_add(request, pk):
     direction = request.GET.get("sens")
     if direction not in ("out", "back"):
         direction = "out"
-    initial = {"direction": direction, "transport": "train",
-               "position": min(trip.legs.filter(direction=direction).count() + 1, 20)}
+    initial = {"direction": direction, "transport": "train"}
+    source_leg = None
+    source_pk = _int_or_none(request.GET.get("from"))
+    if source_pk is not None:
+        source_leg = trip.legs.exclude(transport="car").filter(pk=source_pk).first()
+    if source_leg is not None:
+        initial = {
+            "direction": source_leg.direction, "name": source_leg.name,
+            "transport": source_leg.transport, "status": source_leg.status,
+            "departure_place": source_leg.departure_place,
+            "departure_at": source_leg.departure_at,
+            "arrival_place": source_leg.arrival_place, "arrival_at": source_leg.arrival_at,
+        }
     form = LegForm(request.POST or None, initial=initial)
     if request.method == "POST" and form.is_valid():
+        data = form.cleaned_data
+        if data["transport"] != "car":
+            twin = _identical_leg(trip, data)
+            if twin is not None:
+                _join_leg(twin, me, data.get("price"))
+                messages.success(request, "Ce trajet existe déjà : vous y avez été ajouté.")
+                return redirect("legs", pk=trip.pk)
         leg = form.save(commit=False)
         leg.trip, leg.proposed_by = trip, me
+        price = leg.price
+        if leg.transport != "car":
+            leg.price = None          # le prix des autres transports est personnel
         leg.save()
+        if leg.transport != "car":
+            LegParticipant.objects.create(leg=leg, member=me, price=price)
         return redirect("legs", pk=trip.pk)
-    return render(request, "trips/leg_form.html",
-                  {"form": form, "trip": trip, "title": "Ajouter une étape"})
-
-
-def _leg_for_member(request, leg_pk):
-    leg = get_object_or_404(Leg, pk=leg_pk, trip__members__user=request.user)
-    trip, me = get_trip_and_member(request, leg.trip_id)
-    return leg, trip, me
+    return render(request, "trips/leg_form.html", {
+        "form": form, "trip": trip, "taking": source_leg is not None,
+        "title": "Prendre ce trajet" if source_leg else "Ajouter un trajet"})
 
 
 @login_required
@@ -748,10 +824,73 @@ def leg_edit(request, leg_pk):
         raise PermissionDenied
     form = LegForm(request.POST or None, instance=leg)
     if request.method == "POST" and form.is_valid():
-        form.save()
-        return redirect("legs", pk=trip.pk)
+        data = form.cleaned_data
+        if (data["transport"] != "car"
+                and _identical_leg(trip, data, exclude_pk=leg.pk) is not None):
+            form.add_error(None, "Un trajet identique existe déjà : utilisez « Prendre "
+                                 "ce trajet » sur celui-ci.")
+        else:
+            form.save()
+            return redirect("legs", pk=trip.pk)
     return render(request, "trips/leg_form.html",
                   {"form": form, "trip": trip, "title": f"Modifier : {leg.name}"})
+
+
+@login_required
+@require_POST
+def leg_price(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    participation = None if leg.is_car else leg.participations.filter(member=me).first()
+    if participation is None:
+        messages.error(request, "Vous ne participez pas à ce trajet.")
+        return redirect("legs", pk=trip.pk)
+    raw = request.POST.get("price", "").strip().replace(",", ".")
+    if raw == "":
+        participation.price = None
+    else:
+        try:
+            value = Decimal(raw)
+            if not value.is_finite():
+                raise InvalidOperation
+            value = value.quantize(Decimal("0.01"))
+        except InvalidOperation:
+            messages.error(request, "Prix invalide.")
+            return redirect("legs", pk=trip.pk)
+        if value < 0 or value > Decimal("100000"):
+            messages.error(request, "Prix invalide.")
+            return redirect("legs", pk=trip.pk)
+        participation.price = value
+    participation.save(update_fields=["price"])
+    messages.success(request, "Votre prix est enregistré.")
+    return redirect("legs", pk=trip.pk)
+
+
+@login_required
+@require_POST
+def leg_leave(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    deleted = _drop_from_leg(leg, me)
+    messages.success(request, "Ce trajet n’avait plus personne : il a été supprimé."
+                     if deleted else "Vous n’êtes plus sur ce trajet.")
+    return redirect("legs", pk=trip.pk)
+
+
+@login_required
+@require_POST
+def leg_remove(request, leg_pk):
+    leg, trip, me = _leg_for_member(request, leg_pk)
+    if not (me.can_manage or leg.proposed_by_id == me.pk):
+        raise PermissionDenied
+    member_id = _int_or_none(request.POST.get("member_id"))
+    member = trip.members.filter(pk=member_id).first() if member_id is not None else None
+    if member is not None:
+        _drop_from_leg(leg, member)
+    return redirect("legs", pk=trip.pk)
+
+def _leg_for_member(request, leg_pk):
+    leg = get_object_or_404(Leg, pk=leg_pk, trip__members__user=request.user)
+    trip, me = get_trip_and_member(request, leg.trip_id)
+    return leg, trip, me
 
 
 @login_required
@@ -786,28 +925,7 @@ def leg_join(request, leg_pk):
                 messages.success(request, "Vous êtes ajouté comme passager.")
     return redirect("legs", pk=trip.pk)
 
-
-@login_required
-@require_POST
-def leg_leave(request, leg_pk):
-    leg, trip, me = _leg_for_member(request, leg_pk)
-    leg.passengers.remove(me)
-    messages.success(request, "Vous n’êtes plus passager de cette voiture.")
-    return redirect("legs", pk=trip.pk)
-
-
-@login_required
-@require_POST
-def leg_remove(request, leg_pk):
-    leg, trip, me = _leg_for_member(request, leg_pk)
-    if not (me.can_manage or leg.proposed_by_id == me.pk):
-        raise PermissionDenied
-    member_id = _int_or_none(request.POST.get("member_id"))
-    if member_id is not None:
-        leg.passengers.remove(*leg.passengers.filter(pk=member_id))
-    return redirect("legs", pk=trip.pk)
-
-def _decode_csv(raw):
+def _decode_csv(raw):   
     try:
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
