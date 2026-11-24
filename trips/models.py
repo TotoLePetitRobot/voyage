@@ -384,6 +384,16 @@ class Lodging(models.Model):
     def __str__(self):
         return self.name
 
+class LodgingVote(models.Model):
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="lodging_votes")
+    lodging = models.ForeignKey(Lodging, on_delete=models.CASCADE, related_name="votes")
+    score = models.PositiveSmallIntegerField(choices=SCORE_CHOICES)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["member", "lodging"], name="unique_lodging_vote")
+        ]
+
 POLL_KINDS = [
     ("single", "Un seul choix"),
     ("multiple", "Plusieurs choix possibles"),

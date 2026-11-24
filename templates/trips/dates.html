@@ -34,20 +34,27 @@
 <div id="pick-calendar">{% include "trips/_calendar.html" %}</div>
 
 <h2>Périodes proposées</h2>
-<ul>
+<p><small>Votez à droite de chaque période : Oui = 2 points, Peut-être = 1, Non = 0. Cliquez à nouveau sur votre choix pour retirer votre vote.</small></p>
 {% for letter, o in legend %}
-  <li><b>{{ letter }}</b> : du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}
-    ({{ o.nights }} nuit{{ o.nights|pluralize }})
+<details class="card accordion" id="period-{{ o.pk }}" data-vote-item>
+  <summary><span class="vote-title"><b>{{ letter }}</b> : du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }} ({{ o.nights }} nuit{{ o.nights|pluralize }})</span>{% include "trips/_vote.html" with obj=o prefix="vote-date" %}</summary>
+  <div class="accordion-body">
+    {% if can_vote %}
+      {% url 'date_vote' o.pk as vote_url %}
+      <form id="vote-date-{{ o.pk }}" method="post" action="{{ vote_url }}">{% csrf_token %}</form>
+    {% endif %}
+    <p class="vote-counts" data-vote-counts>Oui {{ o.yes }} · Peut-être {{ o.maybe }} · Non {{ o.no }}</p>
+    {% if o.proposed_by %}<p><small>Proposée par {{ o.proposed_by.label }}</small></p>{% endif %}
     {% if o.can_edit %}
       <a href="{% url 'date_edit' o.pk %}">Modifier</a>
       <form method="post" action="{% url 'date_delete' o.pk %}" style="display:inline"
             onsubmit="return confirm('Supprimer cette période ?')">{% csrf_token %}<button>Supprimer</button></form>
     {% endif %}
-  </li>
+  </div>
+</details>
 {% empty %}
-  <li>Aucune période proposée.</li>
+  <p>Aucune période proposée.</p>
 {% endfor %}
-</ul>
 
 {% if not request.spectator %}
 <h2>Ou saisir les dates à la main</h2>
@@ -58,6 +65,15 @@
 <p><a href="{% url 'date_import' trip.pk %}">Importer plusieurs périodes depuis un fichier CSV</a></p>
 {% endif %}
 <p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+
+<script>
+(function () {
+  if (location.hash.indexOf("#period-") === 0) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") { target.open = true; target.scrollIntoView(); }
+  }
+})();
+</script>
 
 {% if not request.spectator %}
 <script>

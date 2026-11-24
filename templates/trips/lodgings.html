@@ -1,13 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Logements – {{ trip.name }}</h1>
-<p>Proposez des logements pour chaque destination. Seul le nom est obligatoire : tous les autres champs peuvent être remplis plus tard.</p>
+<p>Proposez des logements pour chaque destination. Seul le nom est obligatoire : tous les autres champs peuvent être remplis plus tard. Votez à droite de chaque logement (Oui = 2 points, Peut-être = 1, Non = 0), et cliquez à nouveau sur votre choix pour le retirer.</p>
 
 {% for section in sections %}
   <h2>{{ section.destination.name }}</h2>
   {% for l in section.lodgings %}
-    <div class="card">
-      <h3>{% if l.url %}<a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a>{% else %}{{ l.name }}{% endif %}</h3>
+  <details class="card accordion" id="lodging-{{ l.pk }}" data-vote-item>
+    <summary><span class="vote-title">{% if l.url %}<a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a>{% else %}{{ l.name }}{% endif %}</span>{% include "trips/_vote.html" with obj=l prefix="vote-lodging" %}</summary>
+    <div class="accordion-body">
+      {% if can_vote %}
+        {% url 'lodging_vote' l.pk as vote_url %}
+        <form id="vote-lodging-{{ l.pk }}" method="post" action="{{ vote_url }}">{% csrf_token %}</form>
+      {% endif %}
+      <p class="vote-counts" data-vote-counts>Oui {{ l.yes }} · Peut-être {{ l.maybe }} · Non {{ l.no }}</p>
       <dl>
         {% if l.start_date or l.end_date %}
           <dt>Dates</dt>
@@ -23,19 +29,30 @@
         {% endif %}
       </dl>
       {% if l.notes %}<p>{{ l.notes|linebreaksbr }}</p>{% endif %}
+      {% if l.proposed_by %}<small>Proposé par {{ l.proposed_by.label }}</small>{% endif %}
       {% if l.can_edit %}
         <p><a href="{% url 'lodging_edit' l.pk %}">Modifier</a>
         <form method="post" action="{% url 'lodging_delete' l.pk %}" style="display:inline"
               onsubmit="return confirm('Supprimer ce logement ?')">{% csrf_token %}<button>Supprimer</button></form></p>
       {% endif %}
     </div>
+  </details>
   {% empty %}
     <p>Aucun logement proposé pour l’instant.</p>
   {% endfor %}
   {% if not request.spectator %}
-  <p><a href="{% url 'lodging_add' section.destination.pk %}">Proposer un logement pour {{ section.destination.name }}</a></p>
+    <p><a href="{% url 'lodging_add' section.destination.pk %}">Proposer un logement pour {{ section.destination.name }}</a></p>
   {% endif %}
 {% empty %}
-  <p>Ajoutez d’abord une destination dans l’onglet « Voyage ».</p>
+  <p>Ajoutez d’abord une destination dans l’onglet « Destinations ».</p>
 {% endfor %}
+
+<script>
+(function () {
+  if (location.hash.indexOf("#lodging-") === 0) {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") { target.open = true; target.scrollIntoView(); }
+  }
+})();
+</script>
 {% endblock %}

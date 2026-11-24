@@ -21,7 +21,8 @@ from .leg_utils import leg_key, normalize_place, sort_key
 from .links import lodging_links, sncf_phrase, train_links
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
                      MealItem, Member, SolidarityPref, Trip, Leg, DateVote,
-                     DestVote, Lodging, Poll, PollOption, PollVote, LegParticipant)
+                     DestVote, Lodging, Poll, PollOption, PollVote, LegParticipant,
+                     LodgingVote)
 from .periods import parse_periods, check_period
 from .polls import parse_options, tally, votes_from_post
 from .ranking import summarize, top_pairs
@@ -1606,13 +1607,13 @@ class DestinationPageTests(TestCase):
     def test_collapsed_line_shows_name_and_link_only_when_filled(self):
         self.as_user("simple")
         r = self.client.get(self.url)
-        self.assertContains(r, '<summary><a href="https://exemple.fr/cham"')
-        self.assertContains(r, "<summary>Lisbonne</summary>")
+        self.assertContains(r, '<span class="vote-title"><a href="https://exemple.fr/cham"')
+        self.assertContains(r, '<span class="vote-title">Lisbonne</span>')
 
     def test_each_destination_is_a_foldable_block_with_details_inside(self):
         self.as_user("simple")
         r = self.client.get(self.url)
-        self.assertContains(r, f'<details class="card accordion" id="dest-{self.cham.pk}">')
+        self.assertContains(r, f'<details class="card accordion" id="dest-{self.cham.pk}" data-vote-item>')
         self.assertContains(r, "Vue sur le Mont-Blanc")
 
     def test_trip_page_no_longer_lists_destinations(self):
@@ -2041,3 +2042,123 @@ class PollViewTests(TestCase):
         self.assertEqual(self.client.post(reverse("poll_vote", args=[poll.pk]),
                                           {"choice": 1}).status_code, 404)
 
+class InlineVoteTests(TestCase):
+    PREFIX = {"dest": "vote-dest", "date": "vote-date", "lodging": "vote-lodging"}
+
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "bob", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test", allow_spectators=True)
+        self.m = {n: Member.objects.create(trip=self.trip, display_name=n.title(),
+                                           user=self.users[n], is_organizer=(n == "orga"))
+                  for n in names[:2]}
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix")
+        self.opt = DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                             end_date=date(2027, 2, 13))
+        self.lodging = Lodging.objects.create(destination=self.dest, name="Chalet")
+        pk = self.trip.pk
+        self.urls = {"dest": reverse("destination_vote", args=[self.dest.pk]),
+                     "date": reverse("date_vote", args=[self.opt.pk]),
+                     "lodging": reverse("lodging_vote", args=[self.lodging.pk])}
+        self.pages = {"dest": reverse("destination_list", args=[pk]),
+                      "date": reverse("date_list", args=[pk]),
+                      "lodging": reverse("lodgings", args=[pk])}
+        self.models = {"dest": (DestVote, "destination", self.dest),
+                       "date": (DateVote, "date_option", self.opt),
+                       "lodging": (LodgingVote, "lodging", self.lodging)}
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def votes(self, kind):
+        model, field, obj = self.models[kind]
+        return model.objects.filter(**{field: obj})
+
+    def vote(self, kind, score, ajax=False):
+        extra = {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"} if ajax else {}
+        return self.client.post(self.urls[kind], {"score": score}, **extra)
+
+    def test_set_change_and_clear_a_vote_for_each_kind(self):
+        self.as_user("bob")
+        for kind in self.urls:
+            self.assertEqual(self.vote(kind, "2").status_code, 302)
+            self.assertEqual([v.score for v in self.votes(kind)], [2])
+            self.vote(kind, "0")
+            self.assertEqual([v.score for v in self.votes(kind)], [0])
+            self.vote(kind, "")
+            self.assertEqual(self.votes(kind).count(), 0)
+
+    def test_invalid_scores_are_rejected(self):
+        self.as_user("bob")
+        for kind in self.urls:
+            for bad in ("3", "abc", "-1", "²", " 1"):
+                self.assertEqual(self.vote(kind, bad).status_code, 400, (kind, bad))
+            self.assertEqual(self.votes(kind).count(), 0)
+
+    def test_ajax_returns_the_new_totals(self):
+        self.as_user("bob")
+        self.vote("dest", "2")
+        self.as_user("orga")
+        r = self.vote("dest", "1", ajax=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"score": 1, "yes": 1, "maybe": 1, "no": 0,
+                                    "total": 3, "voters": 2})
+        r = self.vote("dest", "", ajax=True)
+        self.assertEqual((r.json()["score"], r.json()["total"]), (None, 2))
+
+    def test_plain_post_redirects_back_to_the_item(self):
+        self.as_user("bob")
+        pk = self.trip.pk
+        expected = {"dest": f"{self.pages['dest']}#dest-{self.dest.pk}",
+                    "date": f"{self.pages['date']}#period-{self.opt.pk}",
+                    "lodging": f"{self.pages['lodging']}#lodging-{self.lodging.pk}"}
+        for kind, target in expected.items():
+            self.assertRedirects(self.vote(kind, "1"), target, fetch_redirect_response=False)
+
+    def test_pages_show_my_vote_only_and_the_totals(self):
+        self.as_user("bob")
+        for kind in self.urls:
+            self.vote(kind, "2")
+        for kind, url in self.pages.items():
+            html = self.client.get(url).content.decode()
+            self.assertIn(f'form="{self.PREFIX[kind]}-', html)
+            self.assertIn('class="vote-btn active" data-score="2"', html)
+            self.assertIn('data-score="2" value=""', html)   # un second clic retire le vote
+            self.assertIn("2 pts", html)
+        self.as_user("orga")
+        for kind, url in self.pages.items():
+            html = self.client.get(url).content.decode()
+            self.assertNotIn("vote-btn active", html)       # le vote de Bob n'est pas montré
+            self.assertIn("2 pts", html)
+
+    def test_outsiders_and_anonymous_visitors_cannot_vote(self):
+        self.as_user("stranger")
+        for kind in self.urls:
+            self.assertEqual(self.vote(kind, "2").status_code, 404)
+        self.client.logout()
+        for kind in self.urls:
+            r = self.vote(kind, "2")
+            self.assertEqual(r.status_code, 302)
+            self.assertTrue(r["Location"].startswith(reverse("login")))
+            self.assertEqual(self.votes(kind).count(), 0)
+
+    def test_spectators_see_totals_but_cannot_vote(self):
+        self.as_user("bob")
+        for kind in self.urls:
+            self.vote(kind, "2")
+        self.client.logout()
+        self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+        for kind, url in self.pages.items():
+            html = self.client.get(url).content.decode()
+            self.assertIn("data-vote-total", html)
+            self.assertIn("2 pts", html)
+            self.assertNotIn("vote-btn", html)
+            self.assertEqual(self.vote(kind, "2").status_code, 403)
+            self.assertEqual(self.votes(kind).count(), 1)    # seulement le vote de Bob
+
+    def test_votes_tab_and_inline_votes_share_the_same_data(self):
+        self.as_user("bob")
+        self.vote("dest", "2")
+        r = self.client.get(reverse("votes", args=[self.trip.pk]))
+        self.assertContains(r, 'name="dest_%d" value="2" checked' % self.dest.pk)

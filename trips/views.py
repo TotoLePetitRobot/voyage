@@ -5,9 +5,9 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Q, Sum, Prefetch
 from django.db.models.functions import Coalesce
-from django.http import Http404
+from django.http import Http404, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -24,7 +24,8 @@ from .middleware import LoginRedirect, PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
                      Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES, Poll,
-                     PollOption, PollVote, LegParticipant, TRIP_TABS, TRIP_TAB_LABELS)
+                     PollOption, PollVote, LegParticipant, TRIP_TABS, TRIP_TAB_LABELS,
+                     LodgingVote)
 from .periods import parse_periods
 from .polls import tally, votes_from_post
 from .ranking import summarize, top_pairs
@@ -286,12 +287,17 @@ def _calendar_window(request):
     return shown, offset
 
 
-#@login_required
 def date_list(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    options = list(trip.date_options.select_related("proposed_by"))[:MAX_DATE_OPTIONS]
+    options = list(with_scores(trip.date_options.select_related("proposed_by")))[:MAX_DATE_OPTIONS]
+    can_vote = not getattr(me, "is_spectator", False)
+    mine = {}
+    if can_vote:
+        mine = dict(DateVote.objects.filter(member=me, date_option__trip=trip)
+                    .values_list("date_option_id", "score"))
     for opt in options:
         opt.can_edit = me.can_manage or opt.proposed_by_id == me.pk
+        opt.my_score = mine.get(opt.pk)
     form = DateOptionForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         start, end = form.cleaned_data["start_date"], form.cleaned_data["end_date"]
@@ -314,6 +320,7 @@ def date_list(request, pk):
         "prev_offset": offset - 1 if offset > 0 else None,
         "next_offset": offset + 1 if offset + 1 <= MAX_CALENDAR_OFFSET else None,
         "range_label": f"{months[0]['title']} – {months[-1]['title']}",
+        "can_vote": can_vote,
     })
 
 
@@ -387,6 +394,55 @@ def with_scores(qs):
         total=Coalesce(Sum("votes__score"), 0),
     )
 
+def _vote_totals(votes):
+    data = votes.aggregate(
+        yes=Count("pk", filter=Q(score=2)), maybe=Count("pk", filter=Q(score=1)),
+        no=Count("pk", filter=Q(score=0)), total=Coalesce(Sum("score"), 0))
+    data["voters"] = data["yes"] + data["maybe"] + data["no"]
+    return data
+
+
+def _cast_vote(request, member, vote_model, fk_name, obj, redirect_to):
+    """Enregistre, modifie ou retire (score vide) le vote de `member` sur `obj`."""
+    raw = request.POST.get("score", "")
+    if raw not in ("", "0", "1", "2"):
+        return HttpResponseBadRequest("Score invalide")
+    with transaction.atomic():
+        if raw == "":
+            vote_model.objects.filter(member=member, **{fk_name: obj}).delete()
+            mine = None
+        else:
+            vote_model.objects.update_or_create(
+                member=member, **{fk_name: obj}, defaults={"score": int(raw)})
+            mine = int(raw)
+    if request.headers.get("x-requested-with") == "XMLHttpRequest":
+        totals = _vote_totals(vote_model.objects.filter(**{fk_name: obj}))
+        return JsonResponse({"score": mine, **totals})
+    return redirect(redirect_to)
+
+
+@require_POST
+def destination_vote(request, dest_pk):
+    dest = get_object_or_404(Destination, pk=dest_pk)
+    trip, me = get_trip_and_member(request, dest.trip_id)
+    return _cast_vote(request, me, DestVote, "destination", dest,
+                      f"{reverse('destination_list', args=[trip.pk])}#dest-{dest.pk}")
+
+
+@require_POST
+def date_vote(request, opt_pk):
+    opt = get_object_or_404(DateOption, pk=opt_pk)
+    trip, me = get_trip_and_member(request, opt.trip_id)
+    return _cast_vote(request, me, DateVote, "date_option", opt,
+                      f"{reverse('date_list', args=[trip.pk])}#period-{opt.pk}")
+
+
+@require_POST
+def lodging_vote(request, lodging_pk):
+    lodging = get_object_or_404(Lodging, pk=lodging_pk)
+    trip, me = get_trip_and_member(request, lodging.destination.trip_id)
+    return _cast_vote(request, me, LodgingVote, "lodging", lodging,
+                      f"{reverse('lodgings', args=[trip.pk])}#lodging-{lodging.pk}")
 
 def budget_summary(members):
     named = [m for m in members if m.budget is not None and not m.budget_anonymous]
@@ -1097,21 +1153,27 @@ def date_import(request, pk):
 MAX_LODGINGS_PER_DESTINATION = 30
 
 
-#@login_required
 def lodgings(request, pk):
     trip, me = get_trip_and_member(request, pk)
     count = trip.members.count()
+    can_vote = not getattr(me, "is_spectator", False)
+    mine = {}
+    if can_vote:
+        mine = dict(LodgingVote.objects.filter(member=me, lodging__destination__trip=trip)
+                    .values_list("lodging_id", "score"))
+    scored = with_scores(Lodging.objects.select_related("proposed_by"))
     sections = []
-    for destination in trip.destinations.prefetch_related("lodgings__proposed_by"):
+    for destination in trip.destinations.prefetch_related(Prefetch("lodgings", queryset=scored)):
         items = list(destination.lodgings.all())
         for item in items:
             item.can_edit = me.can_edit_lodging(item)
             item.per_person = ((item.price / count).quantize(Decimal("0.01"))
                                if item.price is not None and count else None)
             item.too_small = item.capacity is not None and item.capacity < count
+            item.my_score = mine.get(item.pk)
         sections.append({"destination": destination, "lodgings": items})
-    return render(request, "trips/lodgings.html",
-                  {"trip": trip, "sections": sections, "members_count": count})
+    return render(request, "trips/lodgings.html", {
+        "trip": trip, "sections": sections, "members_count": count, "can_vote": can_vote})
 
 
 @login_required
@@ -1157,14 +1219,19 @@ def lodging_delete(request, lodging_pk):
     lodging.delete()
     return redirect("lodgings", pk=trip.pk)
 
-
-#@login_required
 def destination_list(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    items = list(trip.destinations.select_related("proposed_by"))
+    items = list(with_scores(trip.destinations.select_related("proposed_by")))
+    can_vote = not getattr(me, "is_spectator", False)
+    mine = {}
+    if can_vote:
+        mine = dict(DestVote.objects.filter(member=me, destination__trip=trip)
+                    .values_list("destination_id", "score"))
     for d in items:
         d.can_delete = me.can_manage or d.proposed_by_id == me.pk
-    return render(request, "trips/destinations.html", {"trip": trip, "destinations": items})
+        d.my_score = mine.get(d.pk)
+    return render(request, "trips/destinations.html",
+                  {"trip": trip, "destinations": items, "can_vote": can_vote})
 
 MAX_POLLS = 20
 MAX_POLL_OPTIONS = 15

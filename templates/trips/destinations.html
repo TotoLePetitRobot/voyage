@@ -5,6 +5,7 @@
 <p><a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a> ·
    <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a></p>
 {% endif %}
+<p><small>Votez à droite de chaque destination : Oui = 2 points, Peut-être = 1, Non = 0. Cliquez à nouveau sur votre choix pour retirer votre vote. Les votes individuels ne sont pas montrés.</small></p>
 
 {% if destinations %}
 <p class="toolbar">
@@ -14,21 +15,30 @@
 {% endif %}
 
 {% for d in destinations %}
-<details class="card accordion" id="dest-{{ d.pk }}">
-  <summary>{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}{% if d.stations %}<small> · Gares : {{ d.stations|join:" · " }}</small>{% endif %}</summary>
+<details class="card accordion" id="dest-{{ d.pk }}" data-vote-item>
+  <summary><span class="vote-title">{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</span>{% include "trips/_vote.html" with obj=d prefix="vote-dest" %}</summary>
   <div class="accordion-body">
-    {% if d.notes %}<p><small>{{ d.notes|linebreaksbr }}</small></p>{% endif %}
+    {% if can_vote %}
+      {% url 'destination_vote' d.pk as vote_url %}
+      <form id="vote-dest-{{ d.pk }}" method="post" action="{{ vote_url }}">{% csrf_token %}</form>
+    {% endif %}
+    <p class="vote-counts" data-vote-counts>Oui {{ d.yes }} · Peut-être {{ d.maybe }} · Non {{ d.no }}</p>
+    {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}
+    {% if d.stations %}<p><small>Gares : {{ d.stations|join:" · " }}</small></p>{% endif %}
+    {% if d.notes %}<p>{{ d.notes|linebreaksbr }}</p>{% endif %}
     {% if d.extra_info %}
       <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
     {% endif %}
+    {% if not request.spectator %}
     <p>
       <a href="{% url 'search' trip.pk d.pk %}">Logements et trajets</a> ·
-      {% if not request.spectator %}<a href="{% url 'destination_edit' d.pk %}">Modifier</a>{% endif %}
+      <a href="{% url 'destination_edit' d.pk %}">Modifier</a>
       {% if d.can_delete %}
         <form method="post" action="{% url 'destination_delete' d.pk %}" style="display:inline"
               onsubmit="return confirm('Supprimer cette destination ?')">{% csrf_token %}<button>Supprimer</button></form>
       {% endif %}
     </p>
+    {% endif %}
   </div>
 </details>
 {% empty %}

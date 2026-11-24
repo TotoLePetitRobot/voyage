@@ -1,0 +1,10 @@
+<span class="vote">
+  <span class="vote-total" data-vote-total title="Oui = 2 points, peut-être = 1, non = 0">{{ obj.total }} pt{{ obj.total|pluralize }}</span>
+  {% if can_vote %}
+  <span class="vote-buttons" role="group" aria-label="Mon vote">
+    <button type="submit" form="{{ prefix }}-{{ obj.pk }}" name="score" class="vote-btn{% if obj.my_score == 2 %} active{% endif %}" data-score="2" value="{% if obj.my_score != 2 %}2{% endif %}" aria-pressed="{% if obj.my_score == 2 %}true{% else %}false{% endif %}">Oui</button>
+    <button type="submit" form="{{ prefix }}-{{ obj.pk }}" name="score" class="vote-btn{% if obj.my_score == 1 %} active{% endif %}" data-score="1" value="{% if obj.my_score != 1 %}1{% endif %}" aria-pressed="{% if obj.my_score == 1 %}true{% else %}false{% endif %}">Peut-être</button>
+    <button type="submit" form="{{ prefix }}-{{ obj.pk }}" name="score" class="vote-btn{% if obj.my_score == 0 %} active{% endif %}" data-score="0" value="{% if obj.my_score != 0 %}0{% endif %}" aria-pressed="{% if obj.my_score == 0 %}true{% else %}false{% endif %}">Non</button>
+  </span>
+  {% endif %}
+</span>

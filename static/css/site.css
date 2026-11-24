@@ -169,3 +169,17 @@ form[action*="/prix/"] button { padding: 5px 10px; font-size: 14px; }
 .spectator-bar .in { max-width: 900px; margin: 0 auto; padding: 8px 20px; font-size: 14px; }
 .spectator-bar button { padding: 3px 8px; font-size: 13px; }
 
+details.accordion > summary { flex-wrap: wrap; }
+.vote-title { flex: 1 1 12rem; min-width: 0; }
+.vote { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 400; }
+.vote-total { color: var(--muted); font-size: 13px; font-weight: 600; }
+.vote-buttons { display: inline-flex; gap: 4px; }
+.vote .vote-btn { padding: 3px 10px; font-size: 13px; font-weight: 500; border-radius: 999px; background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.vote .vote-btn:hover { border-color: var(--brand); filter: none; }
+.vote .vote-btn:disabled { opacity: .6; }
+.vote .vote-btn.active { color: var(--brand-ink); font-weight: 700; }
+.vote .vote-btn.active[data-score="2"] { background: var(--ok); border-color: var(--ok); }
+.vote .vote-btn.active[data-score="1"] { background: var(--accent); border-color: var(--accent); }
+.vote .vote-btn.active[data-score="0"] { background: var(--danger); border-color: var(--danger); }
+.vote-counts { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+

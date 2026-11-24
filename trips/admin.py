@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (Trip, Lodging, Leg, Meal, Member, Destination, DateOption, 
-                     Expense, Poll)
+                     Expense, Poll, DateVote, DestVote, LodgingVote)
 
 admin.site.register(Trip)
 admin.site.register(Lodging)
@@ -11,3 +11,6 @@ admin.site.register(Destination)
 admin.site.register(DateOption)
 admin.site.register(Expense)
 admin.site.register(Poll)
+admin.site.register(DateVote)
+admin.site.register(DestVote)
+admin.site.register(LodgingVote)

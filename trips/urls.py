@@ -60,4 +60,7 @@ urlpatterns = [
     path("rejoindre/<str:token>/spectateur/", views.spectator_start, name="spectator_start"),
     path("voyages/<int:pk>/spectateur/quitter/", views.spectator_stop, name="spectator_stop"),
     path("voyages/<int:pk>/spectateurs/", views.spectators_toggle, name="spectators_toggle"),
+    path("destinations/<int:dest_pk>/vote/", views.destination_vote, name="destination_vote"),
+    path("dates/<int:opt_pk>/vote/", views.date_vote, name="date_vote"),
+    path("logements/<int:lodging_pk>/vote/", views.lodging_vote, name="lodging_vote"),
 ]
