@@ -16,15 +16,13 @@
 
 {% for d in destinations %}
 <details class="card accordion" id="dest-{{ d.pk }}" data-vote-item>
-  <summary><span class="vote-title">{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</span>{% include "trips/_vote.html" with obj=d prefix="vote-dest" %}</summary>
+  <summary><span class="vote-title">{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}{% if d.stations %}<small> · Gares : {{ d.stations|join:" · " }}</small>{% endif %}</span>{% include "trips/_vote.html" with obj=d prefix="vote-dest" %}</summary>
   <div class="accordion-body">
     {% if can_vote %}
       {% url 'destination_vote' d.pk as vote_url %}
       <form id="vote-dest-{{ d.pk }}" method="post" action="{{ vote_url }}">{% csrf_token %}</form>
     {% endif %}
     <p class="vote-counts" data-vote-counts>Oui {{ d.yes }} · Peut-être {{ d.maybe }} · Non {{ d.no }}</p>
-    {% if d.proposed_by %}<small>Proposée par {{ d.proposed_by.label }}</small>{% endif %}
-    {% if d.stations %}<p><small>Gares : {{ d.stations|join:" · " }}</small></p>{% endif %}
     {% if d.notes %}<p>{{ d.notes|linebreaksbr }}</p>{% endif %}
     {% if d.extra_info %}
       <dl>{% for k, v in d.extra_pairs %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
