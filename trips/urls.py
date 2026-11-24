@@ -53,4 +53,11 @@ urlpatterns = [
     path("sondages/options/<int:option_pk>/supprimer/", views.poll_option_delete,
          name="poll_option_delete"),
     path("trajets/<int:leg_pk>/prix/", views.leg_price, name="leg_price"),
+    path("voyages/<int:pk>/onglets/", views.trip_tabs, name="trip_tabs"),
+    path("voyages/<int:pk>/membres/fictifs/ajouter/", views.virtual_add, name="virtual_add"),
+    path("voyages/<int:pk>/membres/fictifs/supprimer/", views.virtual_delete,
+         name="virtual_delete"),
+    path("rejoindre/<str:token>/spectateur/", views.spectator_start, name="spectator_start"),
+    path("voyages/<int:pk>/spectateur/quitter/", views.spectator_stop, name="spectator_stop"),
+    path("voyages/<int:pk>/spectateurs/", views.spectators_toggle, name="spectators_toggle"),
 ]

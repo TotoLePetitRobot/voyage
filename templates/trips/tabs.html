@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Onglets du voyage</h1>
+{% for r in rows %}
+  <div class="card">
+    <b>{{ r.label }}</b> {% if r.hidden %}(masqué){% endif %}
+    <form method="post" style="display:inline">{% csrf_token %}
+      <input type="hidden" name="tab" value="{{ r.name }}">
+      <input type="hidden" name="action" value="move">
+      <input type="hidden" name="dir" value="up">
+      {% if not forloop.first %}<button>▲</button>{% endif %}
+    </form>
+    <form method="post" style="display:inline">{% csrf_token %}
+      <input type="hidden" name="tab" value="{{ r.name }}">
+      <input type="hidden" name="action" value="move">
+      <input type="hidden" name="dir" value="down">
+      {% if not forloop.last %}<button>▼</button>{% endif %}
+    </form>
+    <form method="post" style="display:inline">{% csrf_token %}
+      <input type="hidden" name="tab" value="{{ r.name }}">
+      <input type="hidden" name="action" value="toggle">
+      <button>{{ r.hidden|yesno:"Réafficher,Masquer" }}</button>
+    </form>
+  </div>
+{% endfor %}
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}

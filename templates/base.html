@@ -1,4 +1,4 @@
-{% load static %}<!doctype html>
+{% load static trip_ui %}<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
@@ -19,21 +19,21 @@
   {% endif %}
 </div></header>
 
+{% if request.spectator %}
+<div class="spectator-bar"><div class="in">
+  Vous consultez ce voyage en spectateur (lecture seule).
+  <a href="{% url 'trip_join' trip.invite_token %}">Se connecter ou rejoindre</a> ·
+  <form method="post" action="{% url 'spectator_stop' trip.pk %}" style="display:inline">{% csrf_token %}<button>Quitter</button></form>
+</div></div>
+{% endif %}
+
 {% if trip.pk %}
-{% with n=request.resolver_match.url_name %}
+{% trip_tabs_for trip as tabs %}
 <nav class="tabs" aria-label="Sections du voyage"><div class="in">
-  <a href="{% url 'trip_detail' trip.pk %}"{% if n == 'trip_detail' or n == 'roles' %} aria-current="page"{% endif %}>Voyage</a>
-  <a href="{% url 'destination_list' trip.pk %}"{% if n == 'destination_list' or n == 'search' or n == 'destination_add' or n == 'destination_edit' or n == 'destination_import' %} aria-current="page"{% endif %}>Destinations</a>
-  <a href="{% url 'date_list' trip.pk %}"{% if n == 'date_list' or n == 'date_import' or n == 'date_edit' %} aria-current="page"{% endif %}>Dates</a>
-  <a href="{% url 'votes' trip.pk %}"{% if n == 'votes' %} aria-current="page"{% endif %}>Votes</a>
-  <a href="{% url 'lodgings' trip.pk %}"{% if n == 'lodgings' or n == 'lodging_add' or n == 'lodging_edit' %} aria-current="page"{% endif %}>Logements</a>
-  <a href="{% url 'legs' trip.pk %}"{% if n == 'legs' or n == 'leg_add' or n == 'leg_edit' %} aria-current="page"{% endif %}>Trajets</a>
-  <a href="{% url 'polls' trip.pk %}"{% if n == 'polls' or n == 'poll_add' or n == 'poll_detail' or n == 'poll_edit' %} aria-current="page"{% endif %}>Sondages</a>
-  <a href="{% url 'trip_summary' trip.pk %}"{% if n == 'trip_summary' %} aria-current="page"{% endif %}>Synthèse</a>
-  <a href="{% url 'meals' trip.pk %}"{% if n == 'meals' or n == 'meal_add' or n == 'meal_edit' or n == 'meal_shopping' %} aria-current="page"{% endif %}>Repas</a>
-  <a href="{% url 'budget' trip.pk %}"{% if n == 'budget' or n == 'expense_add' or n == 'expense_edit' or n == 'solidarity' %} aria-current="page"{% endif %}>Budget</a>
+  {% for t in tabs %}
+    <a href="{% url t.url_name trip.pk %}"{% if t.current %} aria-current="page"{% endif %}>{{ t.label }}</a>
+  {% endfor %}
 </div></nav>
-{% endwith %}
 {% endif %}
 
 <main class="wrap">

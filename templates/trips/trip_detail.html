@@ -5,15 +5,46 @@
 <h2>Participants</h2>
 <ul>
   {% for m in members %}
-    <li>{{ m.label }}{% if m.origin_city %} – départ de {{ m.origin_city }}{% endif %}{% if m.role_labels %} ({{ m.role_labels|join:", " }}){% endif %}</li>
+    <li>{{ m.label }}
+      {% if m.is_virtual %}<small>(place libre)</small>{% endif %}
+      {% if m.origin_city and not request.spectator %} – départ de {{ m.origin_city }}{% endif %}
+      {% if m.role_labels %} ({{ m.role_labels|join:", " }}){% endif %}</li>
   {% endfor %}
 </ul>
+
+{% if me.is_spectator %}{% else %}
+{% if me.can_manage %}
+<h3>Mode spectateur</h3>
+<p>{% if trip.allow_spectators %}Activé : toute personne qui a le lien d’invitation peut consulter le voyage en lecture seule, sans budget, votes personnels ni villes de départ.{% else %}Désactivé : il faut un compte pour voir le voyage.{% endif %}</p>
+<form method="post" action="{% url 'spectators_toggle' trip.pk %}">{% csrf_token %}<button>{% if trip.allow_spectators %}Désactiver{% else %}Activer{% endif %}</button></form>
+
+<h3>Membres fictifs</h3>
+<form method="post" action="{% url 'virtual_add' trip.pk %}">{% csrf_token %}
+  <input name="display_name" placeholder="Nom de la place (ex. Lou)" maxlength="30">
+  <button>Ajouter une place</button>
+</form>
+<ul>
+  {% for m in members %}{% if m.is_virtual %}
+    <li>{{ m.label }}
+      <form method="post" action="{% url 'virtual_delete' trip.pk %}" style="display:inline"
+            onsubmit="return confirm('Retirer cette place ?')">{% csrf_token %}
+        <input type="hidden" name="member_id" value="{{ m.pk }}">
+        <button>Retirer</button></form>
+    </li>
+  {% endif %}{% endfor %}
+</ul>
+<p><a href="{% url 'trip_tabs' trip.pk %}">Configurer les onglets</a></p>
+{% endif %}
+{% endif %}
+
 {% if me.can_manage %}<p><a href="{% url 'roles' trip.pk %}">Gérer les rôles</a></p>{% endif %}
 
+{% if not request.spectator %}
 <h2>Inviter des amis</h2>
 <p>Envoyez-leur ce lien :
   <input value="{{ invite_url }}" size="50" readonly onclick="this.select()"></p>
 
 <h2>Ma fiche</h2>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button>Enregistrer</button></form>
+{% endif %}
 {% endblock %}

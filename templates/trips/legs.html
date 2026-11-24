@@ -38,7 +38,9 @@
             </ul>
           {% endif %}
           {% if leg.can_join %}
+            {% if not request.spectator %}
             <form method="post" action="{% url 'leg_join' leg.pk %}">{% csrf_token %}<button>Je m’ajoute comme passager</button></form>
+            {% endif %}
           {% elif leg.is_passenger %}
             <form method="post" action="{% url 'leg_leave' leg.pk %}">{% csrf_token %}<button>Me retirer</button></form>
           {% elif leg.seats_left == 0 %}
@@ -50,7 +52,7 @@
           {% if leg.crew %}
             <ul>
             {% for p in leg.crew %}
-              <li>{{ p.member.label }}{% if p.price is not None %} – {{ p.price|floatformat:2 }} €{% endif %}
+              <li>{{ p.member.label }}{% if p.price is not None and not request.spectator %} – {{ p.price|floatformat:2 }} €{% endif %}
                 {% if leg.can_edit %}
                   <form method="post" action="{% url 'leg_remove' leg.pk %}" style="display:inline">{% csrf_token %}
                     <input type="hidden" name="member_id" value="{{ p.member_id }}"><button>Retirer</button></form>
@@ -70,7 +72,7 @@
             </form>
             <form method="post" action="{% url 'leg_leave' leg.pk %}">{% csrf_token %}<button>Me retirer</button></form>
           {% else %}
-            <a class="button-link" href="{% url 'leg_add' trip.pk %}?from={{ leg.pk }}">Prendre ce trajet</a>
+            {% if not request.spectator %}<a class="button-link" href="{% url 'leg_add' trip.pk %}?from={{ leg.pk }}">Prendre ce trajet</a>{% endif %}
           {% endif %}
         {% endif %}
 
@@ -84,7 +86,7 @@
   {% empty %}
     <p>Aucun trajet pour l’instant.</p>
   {% endfor %}
-  <p><a href="{% url 'leg_add' trip.pk %}?sens={{ section.code }}">Ajouter un trajet ({{ section.label|lower }})</a></p>
+  {% if not request.spectator %}<p><a href="{% url 'leg_add' trip.pk %}?sens={{ section.code }}">Ajouter un trajet ({{ section.label|lower }})</a></p>{% endif %}
 {% endfor %}
 
 <script>

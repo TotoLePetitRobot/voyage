@@ -2,7 +2,9 @@
 {% block content %}
 <h1>Sondages – {{ trip.name }}</h1>
 <p>Posez vos propres questions au groupe.</p>
+{% if not request.spectator %}
 <p><a href="{% url 'poll_add' trip.pk %}">Créer un sondage</a></p>
+{% endif %}
 
 {% for p in polls %}
   <div class="card">

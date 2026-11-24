@@ -29,6 +29,188 @@ from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .shopping import aggregate, format_line, parse_line
 from .views import trip_balances, trip_calc
 
+class SpectatorTests(TestCase):
+    SECRETS = ["Cadeau secret", "4321,55", "Zurich", "77,77", "87,00"]
+
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "bob", "carl", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test", allow_spectators=True)
+        self.m = {}
+        for n in names[:3]:
+            self.m[n] = Member.objects.create(
+                trip=self.trip, display_name=n.title(), user=self.users[n],
+                is_organizer=(n == "orga"),
+                origin_city="Zurich" if n == "bob" else "",
+                budget=Decimal("4321.55") if n == "carl" else None)
+        Destination.objects.create(trip=self.trip, name="Chamonix", proposed_by=self.m["bob"])
+        DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                  end_date=date(2027, 2, 13))
+        leg = Leg.objects.create(trip=self.trip, name="Train", transport="train",
+                                 departure_place="Paris", arrival_place="Chamonix",
+                                 direction="out")
+        LegParticipant.objects.create(leg=leg, member=self.m["bob"], price=Decimal("77.77"))
+        gift = Expense.objects.create(trip=self.trip, paid_by=self.m["bob"],
+                                      created_by=self.m["bob"], label="Cadeau secret",
+                                      amount=Decimal("87"), split_mode="custom")
+        ExpenseShare.objects.create(expense=gift, member=self.m["carl"], amount=Decimal("87"))
+        gift.hidden_from.set([self.m["orga"]])
+        pk = self.trip.pk
+        self.public = [reverse(n, args=[pk]) for n in (
+            "trip_detail", "destination_list", "date_list", "lodgings", "legs", "polls",
+            "trip_summary", "meals", "meal_shopping")]
+        self.private = [reverse(n, args=[pk]) for n in (
+            "budget", "votes", "solidarity", "roles", "trip_tabs", "expense_add", "leg_add",
+            "poll_add", "meal_add", "destination_add", "date_import", "destination_import")]
+
+    def enter(self):
+        r = self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+        self.assertRedirects(r, reverse("trip_detail", args=[self.trip.pk]))
+
+    def test_anonymous_visitor_is_sent_to_login_without_spectator_mode(self):
+        r = self.client.get(self.public[0])
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+
+    def test_spectator_mode_is_off_by_default_and_managers_can_toggle_it(self):
+        other = Trip.objects.create(name="Fermé")
+        r = self.client.get(reverse("spectator_start", args=[other.invite_token]))
+        self.assertEqual(r.status_code, 404)
+        url = reverse("spectators_toggle", args=[self.trip.pk])
+        self.client.force_login(self.users["carl"])
+        self.assertEqual(self.client.post(url).status_code, 403)
+        self.client.force_login(self.users["orga"])
+        self.client.post(url)
+        self.trip.refresh_from_db()
+        self.assertFalse(self.trip.allow_spectators)
+
+    def test_disabling_cuts_existing_spectator_sessions(self):
+        self.enter()
+        self.assertEqual(self.client.get(self.public[1]).status_code, 200)
+        Trip.objects.filter(pk=self.trip.pk).update(allow_spectators=False)
+        self.assertEqual(self.client.get(self.public[1]).status_code, 404)
+
+    def test_invalid_token_gives_404(self):
+        self.assertEqual(self.client.get(reverse("spectator_start", args=["nope"])).status_code, 404)
+
+    def test_spectator_reads_public_pages_with_a_banner(self):
+        self.enter()
+        for url in self.public:
+            self.assertEqual(self.client.get(url).status_code, 200, url)
+        self.assertContains(self.client.get(self.public[1]), "Chamonix")
+        self.assertContains(self.client.get(self.public[0]), "Se connecter ou rejoindre")
+
+    def test_no_private_data_reaches_spectators(self):
+        self.enter()
+        for url in self.public:
+            html = self.client.get(url).content.decode()
+            for secret in self.SECRETS:
+                self.assertNotIn(secret, html, (url, secret))
+        summary = self.client.get(self.public[6])
+        self.assertNotContains(summary, "Budgets envisagés")
+
+    def test_spectators_cannot_open_private_pages_nor_post_anywhere(self):
+        self.enter()
+        for url in self.private:
+            self.assertIn(self.client.get(url).status_code, (302, 403), url)
+        for url in self.public + self.private:
+            self.assertIn(self.client.post(url, {"name": "Piège"}).status_code, (302, 403), url)
+        self.assertEqual(Destination.objects.count(), 1)
+
+    def test_spectator_tabs_hide_budget_and_votes(self):
+        self.enter()
+        html = self.client.get(self.public[0]).content.decode()
+        nav = html.split('<nav class="tabs"')[1].split("</nav>")[0]
+        self.assertNotIn(reverse("budget", args=[self.trip.pk]), nav)
+        self.assertNotIn(reverse("votes", args=[self.trip.pk]), nav)
+        self.assertIn(reverse("destination_list", args=[self.trip.pk]), nav)
+
+    def test_spectator_mode_never_blocks_login_and_members_keep_their_rights(self):
+        self.enter()
+        r = self.client.post(reverse("login"), {"username": "orga", "password": "pw-test-123"})
+        self.assertEqual(r.status_code, 302)
+        r = self.client.post(reverse("destination_add", args=[self.trip.pk]), {
+            "name": "Lisbonne", "nearest_station": "", "url": "", "notes": "", "extra_text": ""})
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(Destination.objects.filter(name="Lisbonne").exists())
+        self.assertEqual(self.client.post(reverse("logout")).status_code, 302)
+
+    def test_a_spectator_session_does_not_open_other_trips(self):
+        other = Trip.objects.create(name="Autre", allow_spectators=True)
+        self.enter()
+        self.assertEqual(self.client.get(reverse("trip_detail", args=[other.pk])).status_code, 302)
+
+    def test_logged_in_outsider_with_spectator_session_is_read_only(self):
+        self.client.force_login(self.users["stranger"])
+        self.enter()
+        self.assertEqual(self.client.get(self.public[1]).status_code, 200)
+        self.assertEqual(self.client.get(reverse("budget", args=[self.trip.pk])).status_code, 403)
+        r = self.client.post(reverse("destination_add", args=[self.trip.pk]), {"name": "X"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_stop_ends_spectator_mode(self):
+        self.enter()
+        self.client.post(reverse("spectator_stop", args=[self.trip.pk]))
+        self.assertEqual(self.client.get(self.public[0]).status_code, 302)
+
+
+class TabsConfigTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.orga = U.objects.create_user("orga", password="pw-test-123")
+        self.simple = U.objects.create_user("simple", password="pw-test-123")
+        self.trip = Trip.objects.create(name="Test")
+        Member.objects.create(trip=self.trip, display_name="Orga", user=self.orga,
+                              is_organizer=True)
+        Member.objects.create(trip=self.trip, display_name="Simple", user=self.simple)
+        self.pk = self.trip.pk
+
+    def nav(self, name="trip_detail", **kwargs):
+        html = self.client.get(reverse(name, args=[self.pk])).content.decode()
+        return html.split('<nav class="tabs"')[1].split("</nav>")[0]
+
+    def test_hidden_and_reordered_tabs(self):
+        self.trip.tabs_config = {"hidden": ["budget", "votes"], "order": ["meals", "legs"]}
+        self.trip.save()
+        self.client.force_login(self.simple)
+        nav = self.nav()
+        for hidden in ("budget", "votes"):
+            self.assertNotIn(reverse(hidden, args=[self.pk]), nav)
+        positions = [nav.index(reverse(n, args=[self.pk])) for n in ("meals", "legs", "trip_detail")]
+        print(positions)
+        self.assertEqual(positions, sorted(positions))
+
+    def test_only_managers_can_configure_tabs(self):
+        url = reverse("trip_tabs", args=[self.pk])
+        self.client.force_login(self.simple)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.client.force_login(self.orga)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.client.post(url, {"action": "toggle", "tab": "budget"})
+        self.trip.refresh_from_db()
+        self.assertIn("budget", self.trip.tabs_config["hidden"])
+
+    def test_at_least_one_tab_stays_visible(self):
+        from .models import TRIP_TAB_LABELS
+        url = reverse("trip_tabs", args=[self.pk])
+        self.client.force_login(self.orga)
+        for name in TRIP_TAB_LABELS:
+            self.client.post(url, {"action": "toggle", "tab": name})
+        self.trip.refresh_from_db()
+        self.assertEqual(len(TRIP_TAB_LABELS) - len(self.trip.tabs_config["hidden"]), 1)
+
+    def test_tabs_appear_on_edit_pages_but_not_on_the_pseudo_page(self):
+        member = Member.objects.get(user=self.simple)
+        dest = Destination.objects.create(trip=self.trip, name="X", proposed_by=member)
+        self.client.force_login(self.simple)
+        page = self.client.get(reverse("destination_edit", args=[dest.pk]))
+        self.assertContains(page, '<nav class="tabs"')
+        Member.objects.filter(pk=member.pk).update(display_name="")
+        page = self.client.get(reverse("trip_pseudo", args=[self.pk]))
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, '<nav class="tabs"')
+
 
 class SettlementTests(SimpleTestCase):
     def test_equal_split_spreads_extra_cents(self):
@@ -1527,8 +1709,8 @@ class CalendarWindowTests(TestCase):
         html = self.client.get(self.url, params).content.decode()
         return html.count('<table class="cal">'), html
 
-    def test_default_is_six_months(self):
-        self.assertEqual(self.tables()[0], 6)
+    def test_default_is_three_months(self):
+        self.assertEqual(self.tables()[0], 3)
 
     def test_mois_parameter_sets_the_number_of_months(self):
         self.assertEqual(self.tables(mois=2)[0], 2)
@@ -1536,11 +1718,11 @@ class CalendarWindowTests(TestCase):
 
     def test_invalid_values_fall_back_to_the_default(self):
         for bad in ("abc", "0", "25", "-1", "²", "999999999"):
-            self.assertEqual(self.tables(mois=bad)[0], 6, bad)
+            self.assertEqual(self.tables(mois=bad)[0], 3, bad)
 
     def test_choice_is_remembered_in_the_session(self):
-        self.tables(mois=3)
-        self.assertEqual(self.tables()[0], 3)
+        self.tables(mois=2)
+        self.assertEqual(self.tables()[0], 2)
 
     def test_navigation_links_move_by_one_month(self):
         _, html = self.tables(mois=6)

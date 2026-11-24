@@ -36,6 +36,7 @@
   {% endfor %}
 </table>
 
+{% if not request.spectator %}
 <h2>Budgets envisagés (par personne)</h2>
 <ul>
   {% for m in named_budgets %}<li>{{ m.label }} : {{ m.budget|floatformat:"-2" }} €</li>{% endfor %}
@@ -50,7 +51,10 @@
     </li>
   {% endif %}
 </ul>
+{% endif %}
 {% if missing_budget %}<p><small>{{ missing_budget }} participant{{ missing_budget|pluralize }} sans budget renseigné.</small></p>{% endif %}
 
+{% if not request.spectator %}
 <p><a href="{% url 'votes' trip.pk %}">Modifier mes votes</a> · <a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endif %}
 {% endblock %}

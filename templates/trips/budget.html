@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Budget partagé – {{ trip.name }}</h1>
+{% if not me.is_spectator %}
 <p><a href="{% url 'expense_add' trip.pk %}">Ajouter une dépense</a> ·
    <a href="{% url 'solidarity' trip.pk %}">Ma solidarité (privé)</a></p>
+{% endif %}
 
 {% if my_detail %}
 <p><b>Votre part, en détail</b> (visible par vous seul) : {{ my_detail.base|floatformat:2 }} € de base,
@@ -34,7 +36,7 @@
   <ul>
   {% for t in layer.transfers %}
     <li>{{ t.payer }} → {{ t.payee }} : <b>{{ t.amount|floatformat:2 }} €</b>
-      {% if t.can_mark %}
+      {% if t.can_marki and not me.is_spectator %}
         <form method="post" action="{% url 'settle' trip.pk %}" style="display:inline"
               onsubmit="return confirm('Marquer ce remboursement comme effectué ?')">{% csrf_token %}
           <input type="hidden" name="from_id" value="{{ t.payer_id }}">
@@ -65,7 +67,7 @@
         <br><small>Parts :
         {% for s in e.shares.all %}{{ s.member.label }} {{ s.amount|floatformat:2 }} €{% if not forloop.last %}, {% endif %}{% endfor %}</small>
       {% endif %}
-      {% if e.can_edit %}
+      {% if e.can_edit and not me.is_spectator %}
         {% if not e.is_transfer %}<a href="{% url 'expense_edit' e.pk %}">Modifier</a>{% endif %}
         <form method="post" action="{% url 'expense_delete' e.pk %}" style="display:inline"
               onsubmit="return confirm('Supprimer cette dépense ?')">{% csrf_token %}<button>Supprimer</button></form>

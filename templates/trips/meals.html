@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Repas – {{ trip.name }}</h1>
+{% if not request.spectator %}
 <p><a href="{% url 'meal_add' trip.pk %}">Proposer un repas</a></p>
+{% endif %}
 
 {% if days %}
 <form id="select-form" method="get" action="{% url 'meal_shopping' trip.pk %}" class="card">

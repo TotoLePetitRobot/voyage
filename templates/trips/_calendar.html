@@ -5,7 +5,7 @@
   <tbody>
   {% for week in month.weeks %}<tr>
     {% for c in week %}
-      {% if c %}<td{% if c.letters %} class="busy"{% endif %}><button type="button" class="day" data-date="{{ c.iso }}"{% if c.past %} disabled{% endif %} aria-label="{{ c.label }}">{{ c.day }}{% if c.letters %}<span class="tag">{{ c.letters|join:"" }}</span>{% endif %}</button></td>{% else %}<td></td>{% endif %}
+      {% if c %}<td{% if c.letters %} class="busy"{% endif %}><button type="button" class="day" data-date="{{ c.iso }}"{% if c.past or request.spectator %} disabled{% endif %} aria-label="{{ c.label }}">{{ c.day }}{% if c.letters %}<span class="tag">{{ c.letters|join:"" }}</span>{% endif %}</button></td>{% else %}<td></td>{% endif %}
     {% endfor %}
   </tr>{% endfor %}
   </tbody>

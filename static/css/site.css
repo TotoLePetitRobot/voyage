@@ -165,3 +165,7 @@ form[action*="/prix/"] button { padding: 5px 10px; font-size: 14px; }
 .calendar-controls label { display: inline-flex; align-items: center; gap: 8px; }
 .calendar-controls select { width: auto; }
 
+.spectator-bar { background: var(--accent-soft); border-bottom: 1px solid var(--accent); }
+.spectator-bar .in { max-width: 900px; margin: 0 auto; padding: 8px 20px; font-size: 14px; }
+.spectator-bar button { padding: 3px 8px; font-size: 13px; }
+

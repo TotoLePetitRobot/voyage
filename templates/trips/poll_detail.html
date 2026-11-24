@@ -4,7 +4,7 @@
 {% if poll.description %}<p>{{ poll.description|linebreaksbr }}</p>{% endif %}
 <p><small>{{ poll.get_kind_display }} · {{ voters }} votant{{ voters|pluralize }}{% if poll.created_by %} · créé par {{ poll.created_by.label }}{% endif %}. Les votes individuels ne sont pas montrés.</small></p>
 
-{% if not poll.is_closed %}
+{% if not poll.is_closed and not request.spectator %}
 <h2>Mon vote</h2>
 <form method="post" action="{% url 'poll_vote' poll.pk %}">{% csrf_token %}
   {% if poll.kind == "single" %}

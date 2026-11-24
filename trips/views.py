@@ -20,25 +20,39 @@ from .forms import (DateOptionForm, DestinationForm, ExpenseForm, ImportForm,
 from .importers import parse_destinations
 from .leg_utils import leg_key, sort_key
 from .links import (SNCF_CONNECT_URL, lodging_links, sncf_phrase, train_links)
-from .middleware import PseudoRequired
+from .middleware import LoginRedirect, PseudoRequired
 from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVote, 
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
                      Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES, Poll,
-                     PollOption, PollVote, LegParticipant)
+                     PollOption, PollVote, LegParticipant, TRIP_TABS, TRIP_TAB_LABELS)
 from .periods import parse_periods
 from .polls import tally, votes_from_post
 from .ranking import summarize, top_pairs
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
 from .shopping import aggregate
+from .spectator import SPECTATOR_KEY, SPECTATOR_VIEWS, Spectator
 
 def get_trip_and_member(request, pk, require_pseudo=True):
-    trip = get_object_or_404(Trip, pk=pk, members__user=request.user)
-    me = trip.members.get(user=request.user)
-    if require_pseudo and not me.display_name.strip():
-        raise PseudoRequired(trip.pk)
-    return trip, me
-
+    # 1. Un membre connecté a toujours tous ses droits, même avec une session spectateur.
+    if request.user.is_authenticated:
+        trip = Trip.objects.filter(pk=pk, members__user=request.user).first()
+        if trip is not None:
+            me = trip.members.get(user=request.user)
+            if require_pseudo and not me.display_name.strip():
+                raise PseudoRequired(trip.pk)
+            return trip, me
+    # 2. Spectateur : lecture seule, uniquement les pages autorisées, voyage ouvert.
+    if str(pk) in (request.session.get(SPECTATOR_KEY) or []):
+        url_name = getattr(request.resolver_match, "url_name", None)
+        if request.method not in ("GET", "HEAD") or url_name not in SPECTATOR_VIEWS:
+            raise PermissionDenied
+        request.spectator = True
+        return get_object_or_404(Trip, pk=pk, allow_spectators=True), Spectator()
+    # 3. Les autres
+    if not request.user.is_authenticated:
+        raise LoginRedirect
+    raise Http404
 
 def trip_list(request):
     trips = []
@@ -57,11 +71,12 @@ def trip_create(request):
     return render(request, "trips/trip_form.html", {"form": form})
 
 
-@login_required
+#@login_required
 def trip_detail(request, pk):
     trip, me = get_trip_and_member(request, pk)
-    form = MemberForm(request.POST or None, instance=me)
-    if request.method == "POST" and form.is_valid():
+    spectator = getattr(me, "is_spectator", False)
+    form = None if spectator else MemberForm(request.POST or None, instance=me)
+    if form is not None and request.method == "POST" and form.is_valid():
         form.save()
         return redirect("trip_detail", pk=trip.pk)
     invite_url = request.build_absolute_uri(reverse("trip_join", args=[trip.invite_token]))
@@ -73,11 +88,99 @@ def trip_detail(request, pk):
         "invite_url": invite_url,
     })
 
-
-@login_required
 def trip_join(request, token):
     trip = get_object_or_404(Trip, invite_token=token)
-    Member.objects.get_or_create(trip=trip, user=request.user)
+    if not request.user.is_authenticated:
+        return render(request, "trips/join.html", {"trip": trip})
+    mine = trip.members.filter(user=request.user).first()
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "claim" and mine is None:
+            target = trip.members.filter(
+                pk=_int_or_none(request.POST.get("member_id")) or 0).first()
+            if target is not None and target.is_virtual:
+                target.user = request.user
+                target.save(update_fields=["user"])
+                mine = target
+                messages.success(request,
+                                 f"Vous occupez désormais la place de « {target.label} ».")
+            else:
+                messages.error(request, "Cette place n'existe pas ou est déjà prise.")
+        elif action == "own" and mine is None:
+            mine = Member.objects.create(trip=trip, user=request.user)
+            return redirect("trip_pseudo", pk=trip.pk)
+    if mine is not None:
+        if not mine.display_name.strip():
+            return redirect("trip_pseudo", pk=trip.pk)
+        return redirect("trip_detail", pk=trip.pk)
+    places = trip.members.filter(user=None).order_by("id")
+    return render(request, "trips/join.html", {"trip": trip, "places": places})
+
+def spectator_start(request, token):
+    trip = get_object_or_404(Trip, invite_token=token, allow_spectators=True)
+    watched = list(request.session.get(SPECTATOR_KEY) or [])
+    if str(trip.pk) not in watched:
+        request.session[SPECTATOR_KEY] = (watched + [str(trip.pk)])[-50:]
+    return redirect("trip_detail", pk=trip.pk)
+
+
+@require_POST
+def spectator_stop(request, pk):
+    request.session[SPECTATOR_KEY] = [
+        p for p in (request.session.get(SPECTATOR_KEY) or []) if p != str(pk)]
+    return redirect("trip_list")
+
+
+@login_required
+@require_POST
+def spectators_toggle(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    trip.allow_spectators = not trip.allow_spectators
+    trip.save(update_fields=["allow_spectators"])
+    messages.success(request, "Le mode spectateur est activé." if trip.allow_spectators
+                     else "Le mode spectateur est désactivé.")
+    return redirect("trip_detail", pk=trip.pk)
+
+@login_required
+@require_POST
+def virtual_add(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    name = " ".join((request.POST.get("display_name") or "").split())
+    if not 2 <= len(name) <= 30:
+        messages.error(request, "Nom : entre 2 et 30 caractères.")
+    elif trip.members.filter(display_name__iexact=name).exists():
+        messages.error(request, "Ce nom existe déjà dans ce voyage.")
+    elif trip.members.count() >= 60:
+        messages.error(request, "60 membres au maximum par voyage.")
+    else:
+        Member.objects.create(trip=trip, display_name=name)
+        messages.success(request, f"Place « {name} » créée.")
+    return redirect("trip_detail", pk=trip.pk)
+
+@login_required
+@require_POST
+def virtual_delete(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    target = trip.members.filter(
+        pk=_int_or_none(request.POST.get("member_id")) or 0).first()
+    if target is None or not target.is_virtual:
+        messages.error(request, "Ce membre n'est pas une place fictive.")
+    elif target.expense_shares.exists() or target.paid_expenses.exists():
+        messages.error(request, "Cette place est liée à des dépenses : réaffectez-les "
+                                "ou supprimez-les d'abord.")
+    else:
+        with transaction.atomic():
+            target.hidden_expenses.clear()
+            target.solidarity_prefs.all().delete()
+            trip.expenses.filter(created_by=target).update(created_by=None)
+            target.delete()
+        messages.success(request, "Place retirée.")
     return redirect("trip_detail", pk=trip.pk)
 
 
@@ -106,7 +209,7 @@ def destination_add(request, pk):
 
 @login_required
 def destination_edit(request, dest_pk):
-    dest = get_object_or_404(Destination, pk=dest_pk, trip__members__user=request.user)
+    dest = get_object_or_404(Destination, pk=dest_pk)
     form = DestinationForm(request.POST or None, instance=dest)
     if request.method == "POST" and form.is_valid():
         form.save()
@@ -118,7 +221,7 @@ def destination_edit(request, dest_pk):
 @login_required
 @require_POST
 def destination_delete(request, dest_pk):
-    dest = get_object_or_404(Destination, pk=dest_pk, trip__members__user=request.user)
+    dest = get_object_or_404(Destination, pk=dest_pk)
     me = dest.trip.members.get(user=request.user)
     if not (me.can_manage or dest.proposed_by_id == me.id):
         raise PermissionDenied
@@ -164,7 +267,7 @@ MAX_DATE_OPTIONS = 26
 MIN_ANONYMOUS_FOR_STATS = 3
 
 MONTH_CHOICES = [1, 2, 3, 4, 6, 9, 12, 18, 24]
-DEFAULT_MONTHS = 6
+DEFAULT_MONTHS = 3
 MAX_CALENDAR_OFFSET = 24
 
 
@@ -183,7 +286,7 @@ def _calendar_window(request):
     return shown, offset
 
 
-@login_required
+#@login_required
 def date_list(request, pk):
     trip, me = get_trip_and_member(request, pk)
     options = list(trip.date_options.select_related("proposed_by"))[:MAX_DATE_OPTIONS]
@@ -216,7 +319,7 @@ def date_list(request, pk):
 
 @login_required
 def date_edit(request, opt_pk):
-    opt = get_object_or_404(DateOption, pk=opt_pk, trip__members__user=request.user)
+    opt = get_object_or_404(DateOption, pk=opt_pk)
     trip, me = get_trip_and_member(request, opt.trip_id)
     if not (me.can_manage or opt.proposed_by_id == me.pk):
         raise PermissionDenied
@@ -238,7 +341,7 @@ def date_edit(request, opt_pk):
 @login_required
 @require_POST
 def date_delete(request, opt_pk):
-    opt = get_object_or_404(DateOption, pk=opt_pk, trip__members__user=request.user)
+    opt = get_object_or_404(DateOption, pk=opt_pk)
     me = opt.trip.members.get(user=request.user)
     if not (me.can_manage or opt.proposed_by_id == me.id):
         raise PermissionDenied
@@ -294,11 +397,12 @@ def budget_summary(members):
     return named, len(anon), stats
 
 
-@login_required
+#@login_required
 def trip_summary(request, pk):
     trip, me = get_trip_and_member(request, pk)
     members = list(trip.members.select_related("user"))
-    named, anon_count, anon_stats = budget_summary(members)
+    spectator = getattr(me, "is_spectator", False)
+    named, anon_count, anon_stats = ([], 0, None) if spectator else budget_summary(members)
     return render(request, "trips/summary.html", {
         "trip": trip,
         "destinations": with_scores(trip.destinations.all()).order_by("-total", "-yes", "name"),
@@ -306,7 +410,7 @@ def trip_summary(request, pk):
         "named_budgets": named,
         "anon_count": anon_count,
         "anon_stats": anon_stats,
-        "missing_budget": sum(1 for m in members if m.budget is None),
+        "missing_budget": 0 if spectator else sum(1 for m in members if m.budget is None),
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
         "podium": build_podium(trip),
         "max_score": 2 * len(members),
@@ -369,7 +473,7 @@ def trip_balances(trip):
     return members, layers[0]["balances"], layers[0]["transfers"]
 
 
-@login_required
+#@login_required
 def budget(request, pk):
     trip, me = get_trip_and_member(request, pk)
     members, layers = trip_calc(trip)
@@ -410,7 +514,7 @@ def budget(request, pk):
     if mine["base"] != mine["pooled"] or mine["pooled"] != mine["final"]:
         my_detail = {k: Decimal(v) / 100 for k, v in mine.items()}
     return render(request, "trips/budget.html",
-                  {"trip": trip, "layers": shown, "my_detail": my_detail})
+                  {"trip": trip, "layers": shown, "my_detail": my_detail, "me": me})
 
 
 def _save_expense(form, trip, creator, expense=None):
@@ -448,14 +552,17 @@ def expense_add(request, pk):
     return render(request, "trips/expense_form.html",
                   {"form": form, "trip": trip, "title": "Nouvelle dépense"})
 
+def _expense_for(request, expense_pk):
+    expense = get_object_or_404(Expense, pk=expense_pk)
+    trip, me = get_trip_and_member(request, expense.trip_id)
+    if request.user.is_authenticated and \
+            expense.hidden_from.filter(user=request.user).exists():
+        raise Http404
+    return expense, trip, me
 
 @login_required
 def expense_edit(request, expense_pk):
-    expense = get_object_or_404(
-        Expense.objects.exclude(hidden_from__user=request.user),
-        pk=expense_pk, trip__members__user=request.user)
-    trip = expense.trip
-    me = trip.members.get(user=request.user)
+    expense, trip, me = _expense_for(request, expense_pk)
     if expense.is_transfer or not me.can_edit_expense(expense):
         raise PermissionDenied
     hidden = list(expense.hidden_from.all())
@@ -479,16 +586,20 @@ def expense_edit(request, expense_pk):
 @login_required
 @require_POST
 def expense_delete(request, expense_pk):
-    expense = get_object_or_404(
-        Expense.objects.exclude(hidden_from__user=request.user),
-        pk=expense_pk, trip__members__user=request.user)
-    me = expense.trip.members.get(user=request.user)
+    expense, trip, me = _expense_for(request, expense_pk)
     if not me.can_edit_expense(expense):
         raise PermissionDenied
     trip_pk = expense.trip_id
     expense.delete()
     return redirect("budget", pk=trip_pk)
 
+def _expense_for(request, expense_pk):
+    expense = get_object_or_404(Expense, pk=expense_pk)
+    trip, me = get_trip_and_member(request, expense.trip_id)
+    if request.user.is_authenticated and \
+            expense.hidden_from.filter(user=request.user).exists():
+        raise Http404
+    return expense, trip, me
 
 @login_required
 @require_POST
@@ -616,7 +727,7 @@ def _save_meal(form, trip, me):
     return meal
 
 
-@login_required
+#@login_required
 def meals(request, pk):
     trip, me = get_trip_and_member(request, pk)
     days = {}
@@ -639,7 +750,7 @@ def meal_add(request, pk):
 
 @login_required
 def meal_edit(request, meal_pk):
-    meal = get_object_or_404(Meal, pk=meal_pk, trip__members__user=request.user)
+    meal = get_object_or_404(Meal, pk=meal_pk)
     trip, me = get_trip_and_member(request, meal.trip_id)
     if not me.can_edit_meal(meal):
         raise PermissionDenied
@@ -654,7 +765,7 @@ def meal_edit(request, meal_pk):
 @login_required
 @require_POST
 def meal_delete(request, meal_pk):
-    meal = get_object_or_404(Meal, pk=meal_pk, trip__members__user=request.user)
+    meal = get_object_or_404(Meal, pk=meal_pk)
     trip, me = get_trip_and_member(request, meal.trip_id)
     if not me.can_edit_meal(meal):
         raise PermissionDenied
@@ -662,7 +773,7 @@ def meal_delete(request, meal_pk):
     return redirect("meals", pk=trip.pk)
 
 
-@login_required
+#@login_required
 def meal_shopping(request, pk):
     trip, me = get_trip_and_member(request, pk)
     all_meals = list(trip.meals.prefetch_related("items"))
@@ -749,7 +860,7 @@ def _drop_from_leg(leg, member):
     return False
 
 
-@login_required
+#@login_required
 def legs(request, pk):
     trip, me = get_trip_and_member(request, pk)
     all_legs = sorted(
@@ -889,7 +1000,7 @@ def leg_remove(request, leg_pk):
     return redirect("legs", pk=trip.pk)
 
 def _leg_for_member(request, leg_pk):
-    leg = get_object_or_404(Leg, pk=leg_pk, trip__members__user=request.user)
+    leg = get_object_or_404(Leg, pk=leg_pk)
     trip, me = get_trip_and_member(request, leg.trip_id)
     return leg, trip, me
 
@@ -986,7 +1097,7 @@ def date_import(request, pk):
 MAX_LODGINGS_PER_DESTINATION = 30
 
 
-@login_required
+#@login_required
 def lodgings(request, pk):
     trip, me = get_trip_and_member(request, pk)
     count = trip.members.count()
@@ -1005,7 +1116,7 @@ def lodgings(request, pk):
 
 @login_required
 def lodging_add(request, dest_pk):
-    destination = get_object_or_404(Destination, pk=dest_pk, trip__members__user=request.user)
+    destination = get_object_or_404(Destination, pk=dest_pk)
     trip, me = get_trip_and_member(request, destination.trip_id)
     if destination.lodgings.count() >= MAX_LODGINGS_PER_DESTINATION:
         messages.error(request, f"Maximum {MAX_LODGINGS_PER_DESTINATION} logements par destination.")
@@ -1021,8 +1132,7 @@ def lodging_add(request, dest_pk):
 
 
 def _lodging_for_member(request, lodging_pk):
-    lodging = get_object_or_404(Lodging, pk=lodging_pk,
-                                destination__trip__members__user=request.user)
+    lodging = get_object_or_404(Lodging, pk=lodging_pk)
     trip, me = get_trip_and_member(request, lodging.destination.trip_id)
     if not me.can_edit_lodging(lodging):
         raise PermissionDenied
@@ -1048,7 +1158,7 @@ def lodging_delete(request, lodging_pk):
     return redirect("lodgings", pk=trip.pk)
 
 
-@login_required
+#@login_required
 def destination_list(request, pk):
     trip, me = get_trip_and_member(request, pk)
     items = list(trip.destinations.select_related("proposed_by"))
@@ -1061,17 +1171,16 @@ MAX_POLL_OPTIONS = 15
 
 
 def _poll_for_member(request, poll_pk):
-    poll = get_object_or_404(Poll, pk=poll_pk, trip__members__user=request.user)
+    poll = get_object_or_404(Poll, pk=poll_pk)
     trip, me = get_trip_and_member(request, poll.trip_id)
     return poll, trip, me
-
 
 def _require_poll_manager(poll, me):
     if not (me.can_manage or poll.created_by_id == me.pk):
         raise PermissionDenied
 
 
-@login_required
+#@login_required
 def polls(request, pk):
     trip, me = get_trip_and_member(request, pk)
     items = trip.polls.select_related("created_by").annotate(
@@ -1099,7 +1208,7 @@ def poll_add(request, pk):
                   {"form": form, "trip": trip, "title": "Créer un sondage"})
 
 
-@login_required
+#@login_required
 def poll_detail(request, poll_pk):
     poll, trip, me = _poll_for_member(request, poll_pk)
     options = list(poll.options.all())
@@ -1196,8 +1305,7 @@ def poll_option_add(request, poll_pk):
 @login_required
 @require_POST
 def poll_option_delete(request, option_pk):
-    option = get_object_or_404(PollOption, pk=option_pk,
-                               poll__trip__members__user=request.user)
+    option = get_object_or_404(PollOption, pk=option_pk)
     poll = option.poll
     trip, me = get_trip_and_member(request, poll.trip_id)
     _require_poll_manager(poll, me)
@@ -1206,4 +1314,43 @@ def poll_option_delete(request, option_pk):
     else:
         option.delete()
     return redirect("poll_detail", poll_pk=poll.pk)
+
+@login_required
+def trip_tabs(request, pk):
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    config = trip.tabs_config or {}
+    if request.method == "POST":
+        action = request.POST.get("action")
+        tab = request.POST.get("tab")
+        if tab in TRIP_TAB_LABELS:
+            if action == "move":
+                present = [n for n in config.get("order", []) if n in TRIP_TAB_LABELS] + \
+                          [n for n, _, _, _ in TRIP_TABS if n not in config.get("order", [])]
+                i = present.index(tab)
+                j = i + (-1 if request.POST.get("dir") == "up" else 1)
+                if 0 <= j < len(present):
+                    present[i], present[j] = present[j], present[i]
+                config["order"] = present
+            elif action == "toggle":
+                hidden = set(config.get("hidden", []))
+                if tab in hidden:
+                    hidden.discard(tab)
+                else:
+                    visible = [n for n in config.get("order",
+                               list(TRIP_TAB_LABELS)) if n not in hidden]
+                    if len([n for n in visible if n != tab]) < 1:
+                        messages.error(request, "Au moins un onglet doit rester visible.")
+                    else:
+                        hidden.add(tab)
+                config["hidden"] = sorted(hidden)
+            trip.tabs_config = config
+            trip.save(update_fields=["tabs_config"])
+        return redirect("trip_tabs", pk=trip.pk)
+    hidden = set(config.get("hidden", []))
+    names = [n for n in config.get("order", []) if n in TRIP_TAB_LABELS] + \
+            [n for n, _, _, _ in TRIP_TABS if n not in config.get("order", [])]
+    rows = [{"name": n, "label": TRIP_TAB_LABELS[n], "hidden": n in hidden} for n in names]
+    return render(request, "trips/tabs.html", {"trip": trip, "rows": rows})
 

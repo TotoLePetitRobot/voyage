@@ -32,7 +32,9 @@
   {% empty %}
     <p>Aucun logement proposé pour l’instant.</p>
   {% endfor %}
+  {% if not request.spectator %}
   <p><a href="{% url 'lodging_add' section.destination.pk %}">Proposer un logement pour {{ section.destination.name }}</a></p>
+  {% endif %}
 {% empty %}
   <p>Ajoutez d’abord une destination dans l’onglet « Voyage ».</p>
 {% endfor %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Rejoindre « {{ trip.name }} »</h1>
+{% if user.is_authenticated %}
+  {% if places %}
+    <h2>Une place vous attend ?</h2>
+    <p>Si votre nom a été ajouté par un organisateur, occupez-la :</p>
+    {% for p in places %}
+      <form method="post">{% csrf_token %}
+        <input type="hidden" name="action" value="claim">
+        <input type="hidden" name="member_id" value="{{ p.pk }}">
+        <button>Je suis « {{ p.label }} »</button>
+      </form>
+    {% endfor %}
+    <hr>
+  {% endif %}
+  <form method="post">{% csrf_token %}
+    <input type="hidden" name="action" value="own">
+    <button>S'ajouter comme nouveau membre</button>
+  </form>
+{% else %}
+  <p>Connectez-vous ou créez un compte pour participer :</p>
+  <p><a href="{% url 'login' %}?next={{ request.path }}">Se connecter</a> ·
+     <a href="{% url 'signup' %}?next={{ request.path }}">Créer un compte</a></p>
+  {% if trip.allow_spectators %}
+  <p>Ou consultez le voyage sans compte :</p>
+  <p><a href="{% url 'spectator_start' trip.invite_token %}">Entrer en mode spectateur</a></p>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -7,6 +7,24 @@ from django.utils import timezone
 
 from .shopping import format_line
 
+TRIP_TABS = [("voyage", "Voyage", "trip_detail", {"trip_detail", "roles", "trip_tabs"}),
+             ("destinations", "Destinations", "destination_list",
+             {"destination_list", "search", "destination_add", "destination_edit", "destination_import"}),
+             ("dates", "Dates", "date_list", {"date_list", "date_import", "date_edit"}),
+             ("votes", "Votes", "votes", {"votes"}),
+             ("lodgings", "Logements", "lodgings", {"lodgings", "lodging_add", "lodging_edit", "lodging_delete"}),
+             ("legs", "Trajets", "legs", {"legs", "leg_add", "leg_edit", "leg_delete", "leg_join",
+             "leg_leave", "leg_remove", "leg_price"}),
+             ("polls", "Sondages", "polls", {"polls", "poll_add", "poll_detail", "poll_edit",
+             "poll_vote", "poll_option_add", "poll_option_delete"}),
+             ("summary", "Synthèse", "trip_summary", {"trip_summary"}),
+             ("meals", "Repas", "meals", {"meals", "meal_add", "meal_edit", "meal_shopping"}),
+             ("budget", "Budget", "budget", {"budget", "expense_add", "expense_edit", "solidarity"}),
+]
+
+TRIP_TAB_LABELS = dict((name, label) for name, label, _, _ in TRIP_TABS)
+TRIP_TAB_URL_NAMES = dict((name, url_name) for name, _, url_name, _ in TRIP_TABS)
+
 ROLE_COORGANIZER = "coorganizer"
 ROLE_CHEF = "chef"
 ROLE_ACCOUNTANT = "accountant"
@@ -25,14 +43,18 @@ class Trip(models.Model):
     name = models.CharField("Nom du voyage", max_length=120)
     invite_token = models.CharField(max_length=32, unique=True, default=make_token)
     created_at = models.DateTimeField(auto_now_add=True)
+    tabs_config = models.JSONField("Configuration des onglets", default=dict,
+                                   blank=True)
+    allow_spectators = models.BooleanField("Mode spectateur ouvert", default=False)
 
     def __str__(self):
         return self.name
 
+
 class Member(models.Model):
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="members")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
-                             related_name="memberships")
+                             related_name="memberships", null=True, blank=True)
     display_name = models.CharField("Nom affiché", max_length=60, blank=True)
     origin_city = models.CharField("Ville de départ", max_length=100, blank=True)
     return_city = models.CharField("Lieu de retour (si différent du départ)",
@@ -100,6 +122,10 @@ class Member(models.Model):
         if ROLE_COORGANIZER in self.roles:
             return everything - {ROLE_COORGANIZER}
         return set()
+
+    @property
+    def is_virtual(self):
+        return self.user_id is None
 
     def __str__(self):
         return f"{self.label} – {self.trip}"

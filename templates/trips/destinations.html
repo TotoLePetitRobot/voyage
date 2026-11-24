@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Destinations – {{ trip.name }}</h1>
+{% if not request.spectator %}
 <p><a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a> ·
    <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a></p>
+{% endif %}
 
 {% if destinations %}
 <p class="toolbar">
@@ -21,7 +23,7 @@
     {% endif %}
     <p>
       <a href="{% url 'search' trip.pk d.pk %}">Logements et trajets</a> ·
-      <a href="{% url 'destination_edit' d.pk %}">Modifier</a>
+      {% if not request.spectator %}<a href="{% url 'destination_edit' d.pk %}">Modifier</a>{% endif %}
       {% if d.can_delete %}
         <form method="post" action="{% url 'destination_delete' d.pk %}" style="display:inline"
               onsubmit="return confirm('Supprimer cette destination ?')">{% csrf_token %}<button>Supprimer</button></form>
