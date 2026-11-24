@@ -177,8 +177,8 @@ class TabsConfigTests(TestCase):
         nav = self.nav()
         for hidden in ("budget", "votes"):
             self.assertNotIn(reverse(hidden, args=[self.pk]), nav)
-        positions = [nav.index(reverse(n, args=[self.pk])) for n in ("meals", "legs", "trip_detail")]
-        print(positions)
+        positions = [nav.index(f'href="{reverse(n, args=[self.pk])}"')
+                     for n in ("meals", "legs", "trip_detail")]
         self.assertEqual(positions, sorted(positions))
 
     def test_only_managers_can_configure_tabs(self):
