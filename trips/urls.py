@@ -68,4 +68,8 @@ urlpatterns = [
     path("dates/<int:opt_pk>/prechoix/", views.date_shortlist, name="date_shortlist"),
     path("voyages/<int:pk>/membres/<int:member_pk>/votes/", views.virtual_votes,
          name="virtual_votes"),
+    path("commentaires/<str:kind>/<int:pk>/ajouter/", views.comment_add, name="comment_add"),
+    path("commentaires/<int:comment_pk>/supprimer/", views.comment_delete,
+         name="comment_delete"),
+    path("suggestions/envoyer/", views.feedback_add, name="feedback_add"),
 ]

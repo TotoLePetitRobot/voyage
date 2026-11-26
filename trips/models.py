@@ -451,3 +451,46 @@ class PollVote(models.Model):
             models.UniqueConstraint(fields=["option", "member"], name="unique_poll_vote")
         ]
 
+class Comment(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="comments")
+    author = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="comments")
+    body = models.TextField("Commentaire")
+    created_at = models.DateTimeField(auto_now_add=True)
+    destination = models.ForeignKey(Destination, null=True, blank=True,
+                                    on_delete=models.CASCADE, related_name="comments")
+    date_option = models.ForeignKey(DateOption, null=True, blank=True,
+                                    on_delete=models.CASCADE, related_name="comments")
+    lodging = models.ForeignKey(Lodging, null=True, blank=True,
+                                on_delete=models.CASCADE, related_name="comments")
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(destination__isnull=False, date_option__isnull=True,
+                             lodging__isnull=True)
+                    | models.Q(destination__isnull=True, date_option__isnull=False,
+                               lodging__isnull=True)
+                    | models.Q(destination__isnull=True, date_option__isnull=True,
+                               lodging__isnull=False)),
+                name="comment_has_exactly_one_target"),
+        ]
+
+
+class Feedback(models.Model):
+    """Suggestion d'amélioration d'une page du site (lue dans l'administration)."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                             on_delete=models.SET_NULL, related_name="feedbacks")
+    trip = models.ForeignKey(Trip, null=True, blank=True, on_delete=models.SET_NULL,
+                             related_name="feedbacks")
+    page_name = models.CharField("Page", max_length=60, blank=True)
+    path = models.CharField("Adresse", max_length=200, blank=True)
+    message = models.TextField("Message")
+    created_at = models.DateTimeField(auto_now_add=True)
+    handled = models.BooleanField("Traité", default=False)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+

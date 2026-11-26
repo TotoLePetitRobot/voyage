@@ -37,7 +37,7 @@
 <p><small>Votez à droite de chaque période : Oui = 2 points, Peut-être = 1, Non = 0. Cliquez à nouveau sur votre choix pour retirer votre vote.</small></p>
 {% for letter, o in legend %}
 <details class="card accordion" id="period-{{ o.pk }}" data-vote-item>
-  <summary><span class="vote-title"><b>{{ letter }}</b> : du {{ o.start_date|date:"d/m/y" }} au {{ o.end_date|date:"d/m/y" }} ({{ o.nights }} nuit{{ o.nights|pluralize }})</span>{% include "trips/_vote.html" with obj=o prefix="vote-date" %}{% include "trips/_shortlist.html" with obj=o kind="date" %}</summary>
+  <summary><span class="vote-title"><b>{{ letter }}</b> : du {{ o.start_date|date:"d/m/y" }} au {{ o.end_date|date:"d/m/y" }} ({{ o.nights }} nuit{{ o.nights|pluralize }}){% if o.comment_list %}<small class="muted">· {{ o.comment_list|length }} commentaire{{ o.comment_list|length|pluralize }}</small>{% endif %}</span>{% include "trips/_vote.html" with obj=o prefix="vote-date" %}{% include "trips/_shortlist.html" with obj=o kind="date" %}</summary>
   <div class="accordion-body">
     {% if can_manage %}
       {% url 'date_shortlist' o.pk as short_url %}
@@ -53,6 +53,7 @@
       <form method="post" action="{% url 'date_delete' o.pk %}" style="display:inline"
             onsubmit="return confirm('Supprimer cette période ?')">{% csrf_token %}<button>Supprimer</button></form>
     {% endif %}
+  {% include "trips/_comments.html" with obj=o kind="date" can_comment=can_vote %}
   </div>
 </details>
 {% empty %}

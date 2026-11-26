@@ -11,7 +11,7 @@
   <h2>{{ section.destination.name }}</h2>
   {% for l in section.lodgings %}
   <details class="card accordion" id="lodging-{{ l.pk }}" data-vote-item>
-    <summary><span class="vote-title">{% if l.url %}<a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a>{% else %}{{ l.name }}{% endif %}</span>{% include "trips/_vote.html" with obj=l prefix="vote-lodging" %}</summary>
+    <summary><span class="vote-title">{% if l.url %}<a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.name }}</a>{% else %}{{ l.name }}{% endif %}{% if l.comment_list %}<small class="muted">· {{ l.comment_list|length }} commentaire{{ l.comment_list|length|pluralize }}</small>{% endif %}</span>{% include "trips/_vote.html" with obj=l prefix="vote-lodging" %}</summary>
     <div class="accordion-body">
       {% if can_vote %}
         {% url 'lodging_vote' l.pk as vote_url %}
@@ -42,6 +42,7 @@
         <form method="post" action="{% url 'lodging_delete' l.pk %}" style="display:inline"
               onsubmit="return confirm('Supprimer ce logement ?')">{% csrf_token %}<button>Supprimer</button></form></p>
       {% endif %}
+    {% include "trips/_comments.html" with obj=l kind="logement" can_comment=can_vote %}
     </div>
   </details>
   {% empty %}

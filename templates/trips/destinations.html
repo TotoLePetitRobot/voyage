@@ -16,7 +16,7 @@
 
 {% for d in destinations %}
 <details class="card accordion" id="dest-{{ d.pk }}" data-vote-item>
-  <summary><span class="vote-title">{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}{% if d.stations %}<small> · Gares : {{ d.stations|join:" · " }}</small>{% endif %}</span>{% include "trips/_vote.html" with obj=d prefix="vote-dest" %}{% include "trips/_shortlist.html" with obj=d kind="dest" %}</summary>
+  <summary><span class="vote-title">{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}{% if d.stations %}<small> · Gares : {{ d.stations|join:" · " }}</small>{% endif %}{% if d.comment_list %}<small class="muted">· {{ d.comment_list|length }} commentaire{{ d.comment_list|length|pluralize }}</small>{% endif %}</span>{% include "trips/_vote.html" with obj=d prefix="vote-dest" %}{% include "trips/_shortlist.html" with obj=d kind="dest" %}</summary>
   <div class="accordion-body">
     {% if can_manage %}
       {% url 'destination_shortlist' d.pk as short_url %}
@@ -41,6 +41,7 @@
       {% endif %}
     </p>
     {% endif %}
+  {% include "trips/_comments.html" with obj=d kind="destination" can_comment=can_vote %}
   </div>
 </details>
 {% empty %}

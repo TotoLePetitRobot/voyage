@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from statistics import median
+from datetime import timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -11,6 +12,7 @@ from django.http import Http404, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from .calendar_utils import build_calendar
@@ -25,7 +27,7 @@ from .models import (CATEGORY_CHOICES, DateOption, DateVote, Destination, DestVo
                      Expense, ExpenseShare, Meal, MealItem, Member, SolidarityPref, 
                      Trip, Leg, Lodging, DIRECTION_CHOICES, ROLE_CHOICES, Poll,
                      PollOption, PollVote, LegParticipant, TRIP_TABS, TRIP_TAB_LABELS,
-                     LodgingVote)
+                     LodgingVote, Comment, Feedback)
 from .periods import parse_periods
 from .polls import tally, votes_from_post
 from .ranking import summarize, top_pairs
@@ -296,9 +298,11 @@ def date_list(request, pk):
     if can_vote:
         mine = dict(DateVote.objects.filter(member=me, date_option__trip=trip)
                     .values_list("date_option_id", "score"))
+    comments = comments_for(trip, "date_option", me)
     for opt in options:
         opt.can_edit = me.can_manage or opt.proposed_by_id == me.pk
         opt.my_score = mine.get(opt.pk)
+        opt.comment_list = comments.get(opt.pk, [])
     form = DateOptionForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         start, end = form.cleaned_data["start_date"], form.cleaned_data["end_date"]
@@ -1174,6 +1178,7 @@ def lodgings(request, pk):
                     .values_list("lodging_id", "score"))
     scored = with_scores(Lodging.objects.select_related("proposed_by", "date_option"))
     sections = []
+    comments = comments_for(trip, "lodging", me)
     for destination in trip.destinations.prefetch_related(Prefetch("lodgings", queryset=scored)):
         if not is_visible(destination.pk, None, flt["dests"], flt["dates"]):
             continue
@@ -1185,6 +1190,7 @@ def lodgings(request, pk):
                                if item.price is not None and count else None)
             item.too_small = item.capacity is not None and item.capacity < count
             item.my_score = mine.get(item.pk)
+            item.comment_list = comments.get(item.pk, [])
         sections.append({"destination": destination, "lodgings": items})
     return render(request, "trips/lodgings.html", {
         "trip": trip, "sections": sections, "members_count": count,
@@ -1242,9 +1248,11 @@ def destination_list(request, pk):
     if can_vote:
         mine = dict(DestVote.objects.filter(member=me, destination__trip=trip)
                     .values_list("destination_id", "score"))
+    comments = comments_for(trip, "destination", me)
     for d in items:
         d.can_delete = me.can_manage or d.proposed_by_id == me.pk
         d.my_score = mine.get(d.pk)
+        d.comment_list = comments.get(d.pk, [])
     return render(request, "trips/destinations.html",
                   {"trip": trip, "destinations": items, "can_vote": can_vote,
                    "can_manage": me.can_manage})
@@ -1492,4 +1500,91 @@ def virtual_votes(request, pk, member_pk):
     return render(request, "trips/virtual_votes.html", {
         "trip": trip, "target": target, "destinations": destinations,
         "dates": dates, "lodgings": lodging_list})
+
+MAX_COMMENT_LENGTH = 1000
+MAX_COMMENTS_PER_ITEM = 100
+COMMENT_TARGETS = {
+    # type d'élément : (modèle, champ de Comment, page de retour, préfixe de l'ancre)
+    "destination": (Destination, "destination", "destination_list", "dest"),
+    "date": (DateOption, "date_option", "date_list", "period"),
+    "logement": (Lodging, "lodging", "lodgings", "lodging"),
+}
+
+
+def comments_for(trip, field, me):
+    """{id de l'élément: [commentaires]} en une seule requête. Les spectateurs n'en voient aucun."""
+    if getattr(me, "is_spectator", False):
+        return {}
+    grouped = {}
+    rows = Comment.objects.filter(trip=trip, **{f"{field}__isnull": False}).select_related("author")
+    for comment in rows:
+        comment.can_delete = me.can_manage or comment.author_id == me.pk
+        grouped.setdefault(getattr(comment, f"{field}_id"), []).append(comment)
+    return grouped
+
+
+def _comment_target_trip_id(obj):
+    return obj.destination.trip_id if isinstance(obj, Lodging) else obj.trip_id
+
+
+@require_POST
+def comment_add(request, kind, pk):
+    spec = COMMENT_TARGETS.get(kind)
+    if spec is None:
+        raise Http404
+    model, field, page, prefix = spec
+    obj = get_object_or_404(model, pk=pk)
+    trip, me = get_trip_and_member(request, _comment_target_trip_id(obj))
+    back = f"{reverse(page, args=[trip.pk])}#{prefix}-{obj.pk}"
+    body = (request.POST.get("body") or "").strip()
+    if not 1 <= len(body) <= MAX_COMMENT_LENGTH:
+        messages.error(request, f"Un commentaire fait de 1 à {MAX_COMMENT_LENGTH} caractères.")
+    elif Comment.objects.filter(**{field: obj}).count() >= MAX_COMMENTS_PER_ITEM:
+        messages.error(request, f"{MAX_COMMENTS_PER_ITEM} commentaires au maximum par élément.")
+    else:
+        Comment.objects.create(trip=trip, author=me, body=body, **{field: obj})
+    return redirect(back)
+
+
+@require_POST
+def comment_delete(request, comment_pk):
+    comment = get_object_or_404(Comment, pk=comment_pk)
+    trip, me = get_trip_and_member(request, comment.trip_id)
+    if not (me.can_manage or comment.author_id == me.pk):
+        raise PermissionDenied
+    for kind, (model, field, page, prefix) in COMMENT_TARGETS.items():
+        target_id = getattr(comment, f"{field}_id")
+        if target_id is not None:
+            back = f"{reverse(page, args=[trip.pk])}#{prefix}-{target_id}"
+            break
+    comment.delete()
+    return redirect(back)
+
+
+@login_required
+@require_POST
+def feedback_add(request):
+    message = (request.POST.get("message") or "").strip()
+    page = (request.POST.get("page") or "")[:60]
+    path = (request.POST.get("path") or "")[:200]
+    back = path if path.startswith("/") and url_has_allowed_host_and_scheme(
+        path, allowed_hosts={request.get_host()}) else "/"
+    if page in {"trip_join", "spectator_start"}:
+        path = ""                       # ces adresses contiennent un jeton secret
+    trip = None
+    trip_id = _int_or_none(request.POST.get("trip"))
+    if trip_id is not None:
+        trip = Trip.objects.filter(pk=trip_id, members__user=request.user).first()
+    recent = Feedback.objects.filter(
+        user=request.user, created_at__gte=timezone.now() - timedelta(hours=1)).count()
+    if not 3 <= len(message) <= 2000:
+        messages.error(request, "Votre message doit faire entre 3 et 2000 caractères.")
+    elif recent >= 10:
+        messages.error(request, "Vous avez envoyé beaucoup de suggestions : réessayez plus tard.")
+    else:
+        Feedback.objects.create(user=request.user, trip=trip, page_name=page,
+                                path=path, message=message)
+        messages.success(request, "Merci ! Votre suggestion a été enregistrée.")
+    return redirect(back)
+
 

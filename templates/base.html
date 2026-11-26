@@ -7,6 +7,22 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
   <link rel="stylesheet" href="{% static 'css/site.css' %}">
 </head>
+
+{% if user.is_authenticated and not request.spectator %}
+<footer class="foot">
+  <details class="feedback">
+    <summary>Une idée pour améliorer cette page ?</summary>
+    <form method="post" action="{% url 'feedback_add' %}">{% csrf_token %}
+      <input type="hidden" name="page" value="{{ request.resolver_match.url_name }}">
+      <input type="hidden" name="path" value="{{ request.path }}">
+      {% if trip.pk %}<input type="hidden" name="trip" value="{{ trip.pk }}">{% endif %}
+      <textarea name="message" rows="3" maxlength="2000" required placeholder="Ce qui manque, ce qui est confus, ce qui pourrait être mieux…"></textarea>
+      <button>Envoyer</button>
+    </form>
+  </details>
+</footer>
+{% endif %}
+
 <script src="{% static 'js/votes.js' %}" defer></script>
 <body>
 <header class="topbar"><div class="in">

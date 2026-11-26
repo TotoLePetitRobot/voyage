@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.http import QueryDict
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
@@ -22,7 +23,7 @@ from .links import lodging_links, sncf_phrase, train_links, interrail_timestamp_
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
                      MealItem, Member, SolidarityPref, Trip, Leg, DateVote,
                      DestVote, Lodging, Poll, PollOption, PollVote, LegParticipant,
-                     LodgingVote)
+                     LodgingVote, Comment, Feedback)
 from .periods import parse_periods, check_period
 from .polls import parse_options, tally, votes_from_post
 from .ranking import summarize, top_pairs
@@ -2485,4 +2486,231 @@ class VirtualVotesTests(TestCase):
         self.assertContains(self.client.get(trip_page), self.url)
         self.client.force_login(self.users["simple"])
         self.assertNotContains(self.client.get(trip_page), self.url)
+
+class CommentTests(TestCase):
+    PAGES = {"destination": ("destination_list", "dest", "destination"),
+             "date": ("date_list", "period", "date_option"),
+             "logement": ("lodgings", "lodging", "lodging")}
+
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "bob", "carl", "stranger")
+        self.users = {n: U.objects.create_user(f"login_{n}", password="pw-test-123")
+                      for n in names}
+        self.trip = Trip.objects.create(name="Test", allow_spectators=True)
+        labels = {"orga": "Orga", "bob": "Bobinette", "carl": "Carlito"}
+        self.m = {n: Member.objects.create(trip=self.trip, display_name=labels[n],
+                                           user=self.users[n], is_organizer=(n == "orga"))
+                  for n in names[:3]}
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix")
+        self.other_dest = Destination.objects.create(trip=self.trip, name="Lisbonne")
+        self.opt = DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                             end_date=date(2027, 2, 13))
+        self.lodging = Lodging.objects.create(destination=self.dest, name="Chalet")
+        self.items = {"destination": self.dest, "date": self.opt, "logement": self.lodging}
+
+    def as_user(self, name):
+        self.client.force_login(self.users[name])
+
+    def page_url(self, kind):
+        return reverse(self.PAGES[kind][0], args=[self.trip.pk])
+
+    def post(self, kind, body, obj=None):
+        obj = obj or self.items[kind]
+        return self.client.post(reverse("comment_add", args=[kind, obj.pk]), {"body": body})
+
+    def count(self, kind):
+        field = self.PAGES[kind][2]
+        return Comment.objects.filter(**{f"{field}__isnull": False}).count()
+
+    def test_members_comment_on_each_kind_and_see_them_under_a_pseudo(self):
+        self.as_user("bob")
+        for kind, obj in self.items.items():
+            prefix = self.PAGES[kind][1]
+            r = self.post(kind, f"Avis sur {kind}")
+            self.assertRedirects(r, f"{self.page_url(kind)}#{prefix}-{obj.pk}",
+                                 fetch_redirect_response=False)
+        self.as_user("carl")
+        for kind in self.items:
+            html = self.client.get(self.page_url(kind)).content.decode()
+            self.assertIn(f"Avis sur {kind}", html)
+            self.assertIn("Bobinette", html)
+            self.assertNotIn("login_bob", html)               # jamais le nom d'utilisateur
+
+    def test_comments_stay_with_their_own_item(self):
+        self.as_user("bob")
+        self.post("destination", "Texte pour Chamonix")
+        self.post("destination", "Texte pour Lisbonne", obj=self.other_dest)
+        html = self.client.get(self.page_url("destination")).content.decode()
+        marker = f'id="dest-{self.other_dest.pk}"'
+        self.assertLess(html.index("Texte pour Chamonix"), html.index(marker))
+        self.assertGreater(html.index("Texte pour Lisbonne"), html.index(marker))
+
+    def test_empty_and_too_long_comments_are_rejected(self):
+        self.as_user("bob")
+        for bad in ("", "   \n", "x" * 1001):
+            self.post("destination", bad)
+        self.assertEqual(self.count("destination"), 0)
+        self.post("destination", "x" * 1000)
+        self.assertEqual(self.count("destination"), 1)
+
+    def test_limit_per_item(self):
+        for i in range(100):
+            Comment.objects.create(trip=self.trip, author=self.m["bob"], body=str(i),
+                                   destination=self.dest)
+        self.as_user("bob")
+        self.post("destination", "de trop")
+        self.assertEqual(self.count("destination"), 100)
+
+    def test_delete_rights(self):
+        comment = Comment.objects.create(trip=self.trip, author=self.m["bob"], body="À moi",
+                                         destination=self.dest)
+        url = reverse("comment_delete", args=[comment.pk])
+        self.as_user("carl")
+        self.assertEqual(self.client.post(url).status_code, 403)
+        self.assertTrue(Comment.objects.filter(pk=comment.pk).exists())
+        self.as_user("bob")
+        r = self.client.post(url)
+        self.assertRedirects(r, f"{self.page_url('destination')}#dest-{self.dest.pk}",
+                             fetch_redirect_response=False)
+        self.assertFalse(Comment.objects.filter(pk=comment.pk).exists())
+        other = Comment.objects.create(trip=self.trip, author=self.m["bob"], body="Autre",
+                                       lodging=self.lodging)
+        self.as_user("orga")                                   # un gestionnaire peut tout supprimer
+        self.client.post(reverse("comment_delete", args=[other.pk]))
+        self.assertFalse(Comment.objects.filter(pk=other.pk).exists())
+
+    def test_delete_buttons_only_for_the_author_and_managers(self):
+        Comment.objects.create(trip=self.trip, author=self.m["bob"], body="À moi",
+                               destination=self.dest)
+        self.as_user("carl")
+        self.assertNotContains(self.client.get(self.page_url("destination")), "/supprimer/\" onsubmit=\"return confirm('Supprimer ce commentaire")
+        self.as_user("bob")
+        self.assertContains(self.client.get(self.page_url("destination")), "Supprimer ce commentaire")
+
+    def test_spectators_see_no_comments_and_cannot_post(self):
+        Comment.objects.create(trip=self.trip, author=self.m["bob"], body="Opinion franche",
+                               destination=self.dest)
+        self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+        for kind in self.items:
+            html = self.client.get(self.page_url(kind)).content.decode()
+            self.assertNotIn("Opinion franche", html)
+            self.assertNotIn("Commentaires (", html)
+            self.assertNotIn("commentaire</small>", html)
+        self.assertEqual(self.post("destination", "Piège").status_code, 403)
+        self.assertEqual(self.count("destination"), 1)
+
+    def test_outsiders_anonymous_visitors_and_unknown_kinds(self):
+        self.as_user("stranger")
+        self.assertEqual(self.post("destination", "X").status_code, 404)
+        self.client.logout()
+        r = self.post("destination", "X")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+        self.as_user("bob")
+        r = self.client.post(reverse("comment_add", args=["autre", self.dest.pk]), {"body": "X"})
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(self.count("destination"), 0)
+
+    def test_count_in_the_collapsed_line(self):
+        self.as_user("bob")
+        self.post("destination", "Un")
+        self.assertContains(self.client.get(self.page_url("destination")),
+                            "· 1 commentaire</small>")
+        self.post("destination", "Deux")
+        self.assertContains(self.client.get(self.page_url("destination")),
+                            "· 2 commentaires</small>")
+
+    def test_deleting_an_item_deletes_its_comments(self):
+        Comment.objects.create(trip=self.trip, author=self.m["bob"], body="x", lodging=self.lodging)
+        self.lodging.delete()
+        self.assertEqual(Comment.objects.count(), 0)
+
+    def test_database_requires_exactly_one_target(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Comment.objects.create(trip=self.trip, author=self.m["bob"], body="sans cible")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Comment.objects.create(trip=self.trip, author=self.m["bob"], body="deux cibles",
+                                   destination=self.dest, lodging=self.lodging)
+
+
+class FeedbackTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        self.user = U.objects.create_user("anna", password="pw-test-123")
+        self.trip = Trip.objects.create(name="Test", allow_spectators=True)
+        Member.objects.create(trip=self.trip, display_name="Anna", user=self.user)
+        self.url = reverse("feedback_add")
+
+    def send(self, **data):
+        payload = {"message": "Le calendrier est trop long", "page": "date_list",
+                   "path": "/voyages/1/dates/", "trip": self.trip.pk}
+        payload.update(data)
+        return self.client.post(self.url, payload)
+
+    def test_a_member_sends_a_suggestion(self):
+        self.client.force_login(self.user)
+        r = self.send()
+        self.assertRedirects(r, "/voyages/1/dates/", fetch_redirect_response=False)
+        feedback = Feedback.objects.get()
+        self.assertEqual((feedback.user, feedback.trip, feedback.page_name, feedback.path),
+                         (self.user, self.trip, "date_list", "/voyages/1/dates/"))
+        self.assertEqual(feedback.message, "Le calendrier est trop long")
+        self.assertFalse(feedback.handled)
+
+    def test_secret_invite_paths_are_not_stored(self):
+        self.client.force_login(self.user)
+        self.send(page="trip_join", path=f"/rejoindre/{self.trip.invite_token}/")
+        self.assertEqual(Feedback.objects.get().path, "")
+
+    def test_foreign_or_unknown_trips_are_ignored(self):
+        other = Trip.objects.create(name="Autre")
+        self.client.force_login(self.user)
+        self.send(trip=other.pk)
+        self.send(trip="abc")
+        self.assertEqual(list(Feedback.objects.values_list("trip", flat=True)), [None, None])
+
+    def test_message_length_limits(self):
+        self.client.force_login(self.user)
+        for bad in ("ab", "x" * 2001, "   "):
+            self.send(message=bad)
+        self.assertEqual(Feedback.objects.count(), 0)
+        self.send(message="abc")
+        self.send(message="x" * 2000)
+        self.assertEqual(Feedback.objects.count(), 2)
+
+    def test_rate_limit(self):
+        self.client.force_login(self.user)
+        for i in range(10):
+            Feedback.objects.create(user=self.user, message=f"message {i}")
+        self.send()
+        self.assertEqual(Feedback.objects.count(), 10)
+
+    def test_redirect_never_leaves_the_site(self):
+        self.client.force_login(self.user)
+        for evil in ("//evil.example/x", "https://evil.example", "javascript:alert(1)"):
+            r = self.send(path=evil)
+            self.assertRedirects(r, "/", fetch_redirect_response=False)
+
+    def test_only_logged_in_members_can_send(self):
+        r = self.send()
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+        self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+        r = self.send()
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+        self.assertEqual(Feedback.objects.count(), 0)
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(self.url).status_code, 405)
+
+    def test_footer_form_only_for_logged_in_members(self):
+        anonymous = self.client.get(reverse("login")).content.decode()
+        self.assertNotIn(self.url, anonymous)
+        self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+        spectator = self.client.get(reverse("destination_list", args=[self.trip.pk])).content.decode()
+        self.assertNotIn(self.url, spectator)
+        self.client.force_login(self.user)
+        member = self.client.get(reverse("destination_list", args=[self.trip.pk])).content.decode()
+        self.assertIn(self.url, member)
+        self.assertIn(f'name="trip" value="{self.trip.pk}"', member)
 

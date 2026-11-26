@@ -50,4 +50,16 @@
       button.disabled = false;
     });
   });
+  // Ouvre le bloc dépliant désigné par l'adresse (#dest-12, #period-3, #lodging-5).
+  function openFromHash() {
+    var id = "";
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (e) { return; }
+    var target = id ? document.getElementById(id) : null;
+    if (target && target.tagName === "DETAILS") {
+      target.open = true;
+      target.scrollIntoView();
+    }
+  }
+  document.addEventListener("DOMContentLoaded", openFromHash);
+  window.addEventListener("hashchange", openFromHash);
 })();

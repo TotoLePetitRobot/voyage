@@ -1,0 +1,21 @@
+{% if can_comment %}
+<div class="comments">
+  <h4>Commentaires ({{ obj.comment_list|length }})</h4>
+  {% for c in obj.comment_list %}
+    <div class="comment">
+      <small><b>{{ c.author.label|default:"Ancien membre" }}</b> · {{ c.created_at|date:"j F Y, H:i" }}</small>
+      <p>{{ c.body|linebreaksbr }}</p>
+      {% if c.can_delete %}
+        <form method="post" action="{% url 'comment_delete' c.pk %}"
+              onsubmit="return confirm('Supprimer ce commentaire ?')">{% csrf_token %}<button>Supprimer</button></form>
+      {% endif %}
+    </div>
+  {% empty %}
+    <p><small>Aucun commentaire pour l’instant.</small></p>
+  {% endfor %}
+  <form method="post" action="{% url 'comment_add' kind obj.pk %}">{% csrf_token %}
+    <textarea name="body" rows="2" maxlength="1000" required placeholder="Ajouter un commentaire…"></textarea>
+    <button>Commenter</button>
+  </form>
+</div>
+{% endif %}
