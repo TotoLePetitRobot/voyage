@@ -1,4 +1,7 @@
+from datetime import datetime
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
+
 from .calendar_utils import MONTHS_FR
 
 # Gabarits modifiables : {dest}, {adults}, {checkin}, {checkout}, {origin}.
@@ -28,6 +31,18 @@ TRAIN_PROVIDERS = [
 
 SNCF_CONNECT_URL = "https://www.sncf-connect.com/"
 
+INTERRAIL_TZ = ZoneInfo("Europe/Paris")     # fuseau de « 6 h 00 » : à changer si besoin
+INTERRAIL_URL = ("https://www.interrail.com/en/book-reservations?t={t}&ol={origin}&dl={dest}"
+                 "&vl=&vv=&ar=false&tv=1&mct=1")
+INTERRAIL_URL_UNDATED = ("https://www.interrail.com/en/book-reservations?ol={origin}&dl={dest}"
+                         "&vl=&vv=&ar=false&tv=1&mct=1")
+
+
+def interrail_timestamp_ms(day):
+    """6 h 00 (heure de Paris) du jour donné, en nanosecondes depuis le 1er janvier 1970 UTC."""
+    moment = datetime(day.year, day.month, day.day, 6, 0, tzinfo=INTERRAIL_TZ)
+    return int(moment.timestamp()) * 1_000
+
 
 def _q(value):
     return quote(str(value), safe="")
@@ -46,10 +61,16 @@ def lodging_links(destination, start, end, adults):
             for p in LODGING_PROVIDERS], dated
 
 
-def train_links(origin, destination, station=""):
+def train_links(origin, destination, station="", day=None):
     target = station.strip() or destination
     values = {"origin": _q(origin), "dest": _q(target)}
-    return [{"name": p["name"], "url": p["url"].format(**values)} for p in TRAIN_PROVIDERS]
+    links = [{"name": p["name"], "url": p["url"].format(**values)} for p in TRAIN_PROVIDERS]
+    if day is None:       # sans période, on ne peut pas calculer la date : lien sans « t= »
+        url = INTERRAIL_URL_UNDATED.format(**values)
+    else:
+        url = INTERRAIL_URL.format(t=interrail_timestamp_ms(day), **values)
+    links.append({"name": "Interrail", "url": url})
+    return links
 
 
 def sncf_phrase(origin, destination, station="", day=None):

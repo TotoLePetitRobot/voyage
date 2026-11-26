@@ -32,6 +32,7 @@ from .ranking import summarize, top_pairs
 from .settlement import (compute_balances, compute_owed, suggest_transfers, 
                          to_cents, to_milli)
 from .shopping import aggregate
+from .shortlist import is_visible
 from .spectator import SPECTATOR_KEY, SPECTATOR_VIEWS, Spectator
 
 def get_trip_and_member(request, pk, require_pseudo=True):
@@ -321,6 +322,7 @@ def date_list(request, pk):
         "next_offset": offset + 1 if offset + 1 <= MAX_CALENDAR_OFFSET else None,
         "range_label": f"{months[0]['title']} – {months[-1]['title']}",
         "can_vote": can_vote,
+        "can_manage": me.can_manage,
     })
 
 
@@ -459,6 +461,9 @@ def trip_summary(request, pk):
     members = list(trip.members.select_related("user"))
     spectator = getattr(me, "is_spectator", False)
     named, anon_count, anon_stats = ([], 0, None) if spectator else budget_summary(members)
+    lodging_rows = list(
+        with_scores(Lodging.objects.filter(destination__trip=trip).select_related("destination"))
+        .order_by("-total", "-yes", "destination__name", "name"))
     return render(request, "trips/summary.html", {
         "trip": trip,
         "destinations": with_scores(trip.destinations.all()).order_by("-total", "-yes", "name"),
@@ -470,6 +475,7 @@ def trip_summary(request, pk):
         "min_anon": MIN_ANONYMOUS_FOR_STATS,
         "podium": build_podium(trip),
         "max_score": 2 * len(members),
+        "lodging_rows": lodging_rows,
     })
 
 def _build_layer(key, expenses, ids, pools, caps, extras):
@@ -746,13 +752,13 @@ def search(request, pk, dest_pk):
 
     outward = [{**g, "routes": [{
         "target": s or dest.name,
-        "links": train_links(g["place"], dest.name, s),
+        "links": train_links(g["place"], dest.name, s, outward_day),
         "sncf_phrase": sncf_phrase(g["place"], dest.name, s, outward_day),
     } for s in targets]} for g in group(m.origin_city for m in members)]
 
     back = [{**g, "routes": [{
         "source": s or dest.name,
-        "links": train_links(s or dest.name, g["place"]),
+        "links": train_links(s or dest.name, g["place"], "", return_day),
         "sncf_phrase": sncf_phrase(s or dest.name, g["place"], "", return_day),
     } for s in targets]} for g in group(
         m.return_city.strip() or m.origin_city for m in members)]
@@ -921,8 +927,11 @@ def legs(request, pk):
     trip, me = get_trip_and_member(request, pk)
     all_legs = sorted(
         trip.legs.select_related("proposed_by").prefetch_related(
-            "passengers", "participations__member"),
+            "passengers", "participations__member", "destination", "date_option"),
         key=sort_key)
+    flt = shortlist_filter(request, trip)
+    all_legs = [leg for leg in all_legs
+                if is_visible(leg.destination_id, leg.date_option_id, flt["dests"], flt["dates"])]
     sections = []
     for code, label in DIRECTION_CHOICES:
         items = [leg for leg in all_legs if leg.direction == code]
@@ -937,7 +946,8 @@ def legs(request, pk):
                 leg.my_participation = next(
                     (p for p in leg.crew if p.member_id == me.pk), None)
         sections.append({"code": code, "label": label, "legs": items})
-    return render(request, "trips/legs.html", {"trip": trip, "sections": sections})
+    return render(request, "trips/legs.html", 
+                  {"trip": trip, "sections": sections, "shortlist": flt})
 
 
 @login_required
@@ -962,7 +972,7 @@ def leg_add(request, pk):
             "departure_at": source_leg.departure_at,
             "arrival_place": source_leg.arrival_place, "arrival_at": source_leg.arrival_at,
         }
-    form = LegForm(request.POST or None, initial=initial)
+    form = LegForm(request.POST or None, initial=initial, trip=trip)
     if request.method == "POST" and form.is_valid():
         data = form.cleaned_data
         if data["transport"] != "car":
@@ -990,7 +1000,7 @@ def leg_edit(request, leg_pk):
     leg, trip, me = _leg_for_member(request, leg_pk)
     if not (me.can_manage or leg.proposed_by_id == me.pk):
         raise PermissionDenied
-    form = LegForm(request.POST or None, instance=leg)
+    form = LegForm(request.POST or None, instance=leg, trip=trip)
     if request.method == "POST" and form.is_valid():
         data = form.cleaned_data
         if (data["transport"] != "car"
@@ -1157,14 +1167,18 @@ def lodgings(request, pk):
     trip, me = get_trip_and_member(request, pk)
     count = trip.members.count()
     can_vote = not getattr(me, "is_spectator", False)
+    flt = shortlist_filter(request, trip)
     mine = {}
     if can_vote:
         mine = dict(LodgingVote.objects.filter(member=me, lodging__destination__trip=trip)
                     .values_list("lodging_id", "score"))
-    scored = with_scores(Lodging.objects.select_related("proposed_by"))
+    scored = with_scores(Lodging.objects.select_related("proposed_by", "date_option"))
     sections = []
     for destination in trip.destinations.prefetch_related(Prefetch("lodgings", queryset=scored)):
-        items = list(destination.lodgings.all())
+        if not is_visible(destination.pk, None, flt["dests"], flt["dates"]):
+            continue
+        items = [item for item in destination.lodgings.all()
+                 if is_visible(None, item.date_option_id, flt["dests"], flt["dates"])]
         for item in items:
             item.can_edit = me.can_edit_lodging(item)
             item.per_person = ((item.price / count).quantize(Decimal("0.01"))
@@ -1173,7 +1187,8 @@ def lodgings(request, pk):
             item.my_score = mine.get(item.pk)
         sections.append({"destination": destination, "lodgings": items})
     return render(request, "trips/lodgings.html", {
-        "trip": trip, "sections": sections, "members_count": count, "can_vote": can_vote})
+        "trip": trip, "sections": sections, "members_count": count,
+        "can_vote": can_vote, "shortlist": flt})
 
 
 @login_required
@@ -1183,7 +1198,7 @@ def lodging_add(request, dest_pk):
     if destination.lodgings.count() >= MAX_LODGINGS_PER_DESTINATION:
         messages.error(request, f"Maximum {MAX_LODGINGS_PER_DESTINATION} logements par destination.")
         return redirect("lodgings", pk=trip.pk)
-    form = LodgingForm(request.POST or None)
+    form = LodgingForm(request.POST or None, trip=trip)
     if request.method == "POST" and form.is_valid():
         lodging = form.save(commit=False)
         lodging.destination, lodging.proposed_by = destination, me
@@ -1204,7 +1219,7 @@ def _lodging_for_member(request, lodging_pk):
 @login_required
 def lodging_edit(request, lodging_pk):
     lodging, trip = _lodging_for_member(request, lodging_pk)
-    form = LodgingForm(request.POST or None, instance=lodging)
+    form = LodgingForm(request.POST or None, instance=lodging, trip=trip)
     if request.method == "POST" and form.is_valid():
         form.save()
         return redirect("lodgings", pk=trip.pk)
@@ -1231,7 +1246,8 @@ def destination_list(request, pk):
         d.can_delete = me.can_manage or d.proposed_by_id == me.pk
         d.my_score = mine.get(d.pk)
     return render(request, "trips/destinations.html",
-                  {"trip": trip, "destinations": items, "can_vote": can_vote})
+                  {"trip": trip, "destinations": items, "can_vote": can_vote,
+                   "can_manage": me.can_manage})
 
 MAX_POLLS = 20
 MAX_POLL_OPTIONS = 15
@@ -1420,4 +1436,60 @@ def trip_tabs(request, pk):
             [n for n, _, _, _ in TRIP_TABS if n not in config.get("order", [])]
     rows = [{"name": n, "label": TRIP_TAB_LABELS[n], "hidden": n in hidden} for n in names]
     return render(request, "trips/tabs.html", {"trip": trip, "rows": rows})
+
+def shortlist_filter(request, trip):
+    dests = set(trip.destinations.filter(is_shortlisted=True).values_list("pk", flat=True))
+    dates = set(trip.date_options.filter(is_shortlisted=True).values_list("pk", flat=True))
+    show_all = request.GET.get("tout") == "1"
+    return {"dests": set() if show_all else dests, "dates": set() if show_all else dates,
+            "configured": bool(dests or dates), "show_all": show_all}
+
+
+@require_POST
+def destination_shortlist(request, dest_pk):
+    dest = get_object_or_404(Destination, pk=dest_pk)
+    trip, me = get_trip_and_member(request, dest.trip_id)
+    if not me.can_manage:
+        raise PermissionDenied
+    dest.is_shortlisted = request.POST.get("on") == "1"
+    dest.save(update_fields=["is_shortlisted"])
+    return redirect(f"{reverse('destination_list', args=[trip.pk])}#dest-{dest.pk}")
+
+
+@require_POST
+def date_shortlist(request, opt_pk):
+    opt = get_object_or_404(DateOption, pk=opt_pk)
+    trip, me = get_trip_and_member(request, opt.trip_id)
+    if not me.can_manage:
+        raise PermissionDenied
+    opt.is_shortlisted = request.POST.get("on") == "1"
+    opt.save(update_fields=["is_shortlisted"])
+    return redirect(f"{reverse('date_list', args=[trip.pk])}#period-{opt.pk}")
+
+
+@login_required
+def virtual_votes(request, pk, member_pk):
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    target = get_object_or_404(Member, pk=member_pk, trip=trip, user__isnull=True)
+    destinations = list(trip.destinations.all())
+    dates = list(trip.date_options.all())
+    lodging_list = list(Lodging.objects.filter(destination__trip=trip)
+                        .select_related("destination"))
+    if request.method == "POST":
+        _save_votes(request, target, destinations, "dest", DestVote, "destination")
+        _save_votes(request, target, dates, "date", DateVote, "date_option")
+        _save_votes(request, target, lodging_list, "lodging", LodgingVote, "lodging")
+        messages.success(request, f"Votes de « {target.label} » enregistrés.")
+        return redirect("trip_detail", pk=trip.pk)
+    for items, model, field in ((destinations, DestVote, "destination_id"),
+                                (dates, DateVote, "date_option_id"),
+                                (lodging_list, LodgingVote, "lodging_id")):
+        scores = dict(model.objects.filter(member=target).values_list(field, "score"))
+        for item in items:
+            item.my_score = scores.get(item.pk)
+    return render(request, "trips/virtual_votes.html", {
+        "trip": trip, "target": target, "destinations": destinations,
+        "dates": dates, "lodgings": lodging_list})
 

@@ -309,11 +309,31 @@ class MealForm(forms.ModelForm):
         self.items_parsed = parsed
         return text
 
+def _limit_to_trip(form, trip):
+    """Les listes de destinations et de périodes ne proposent que celles du voyage : un
+    identifiant d'un autre voyage est refusé par le formulaire."""
+    for name in ("destination", "date_option"):
+        if name not in form.fields:
+            continue
+        field = form.fields[name]
+        field.required = False
+        field.empty_label = "— Aucune —"
+        if trip is None:
+            field.queryset = field.queryset.none()
+        elif name == "destination":
+            field.queryset = trip.destinations.all()
+            field.label_from_instance = lambda d: d.name
+        else:
+            field.queryset = trip.date_options.all()
+            field.label_from_instance = (
+                lambda o: f"du {o.start_date:%d/%m/%Y} au {o.end_date:%d/%m/%Y}")
+
 class LegForm(forms.ModelForm):
     class Meta:
         model = Leg
         fields = ["direction", "name", "transport", "departure_place", "departure_at",
-                  "arrival_place", "arrival_at", "price", "status", "seats"]
+                  "arrival_place", "arrival_at", "price", "status", "seats",
+                  "destination", "date_option"]
         widgets = {
             "departure_at": forms.DateTimeInput(attrs={"type": "datetime-local"},
                                                 format="%Y-%m-%dT%H:%M"),
@@ -321,8 +341,9 @@ class LegForm(forms.ModelForm):
                                               format="%Y-%m-%dT%H:%M"),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, trip=None, **kwargs):
         super().__init__(*args, **kwargs)
+        _limit_to_trip(self, trip)
         for name in ("departure_at", "arrival_at"):
             self.fields[name].input_formats = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S",
                                                "%Y-%m-%d %H:%M"]
@@ -362,15 +383,16 @@ _HTTP_URL = URLValidator(schemes=["http", "https"])
 class LodgingForm(forms.ModelForm):
     class Meta:
         model = Lodging
-        fields = ["name", "url", "start_date", "end_date", "price", "capacity", "notes"]
+        fields = ["name", "url", "date_option", "start_date", "end_date", "price", "capacity", "notes"]
         widgets = {
             "start_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "end_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "notes": forms.Textarea(attrs={"rows": 4}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, trip=None, **kwargs):
         super().__init__(*args, **kwargs)
+        _limit_to_trip(self, trip)
         self.fields["price"].widget.attrs.update(step="0.01", min="0")
         self.fields["notes"].help_text = (
             "Par exemple : distance aux remontées mécaniques, étage, parking…")

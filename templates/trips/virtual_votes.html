@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Votes de « {{ target.label }} »</h1>
+<p>Cette place n’a pas de compte : vous votez à sa place, en tant qu’organisateur. « Pas d’avis » efface le vote.</p>
+<form method="post">{% csrf_token %}
+
+<h2>Destinations</h2>
+{% for d in destinations %}
+  <fieldset><legend>{{ d.name }}</legend>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="2"{% if d.my_score == 2 %} checked{% endif %}> Oui</label>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="1"{% if d.my_score == 1 %} checked{% endif %}> Peut-être</label>
+    <label><input type="radio" name="dest_{{ d.pk }}" value="0"{% if d.my_score == 0 %} checked{% endif %}> Non</label>
+    <label><input type="radio" name="dest_{{ d.pk }}" value=""{% if d.my_score is None %} checked{% endif %}> Pas d’avis</label>
+  </fieldset>
+{% empty %}<p>Aucune destination.</p>{% endfor %}
+
+<h2>Périodes</h2>
+{% for o in dates %}
+  <fieldset><legend>Du {{ o.start_date|date:"j F Y" }} au {{ o.end_date|date:"j F Y" }}</legend>
+    <label><input type="radio" name="date_{{ o.pk }}" value="2"{% if o.my_score == 2 %} checked{% endif %}> Oui</label>
+    <label><input type="radio" name="date_{{ o.pk }}" value="1"{% if o.my_score == 1 %} checked{% endif %}> Peut-être</label>
+    <label><input type="radio" name="date_{{ o.pk }}" value="0"{% if o.my_score == 0 %} checked{% endif %}> Non</label>
+    <label><input type="radio" name="date_{{ o.pk }}" value=""{% if o.my_score is None %} checked{% endif %}> Pas d’avis</label>
+  </fieldset>
+{% empty %}<p>Aucune période.</p>{% endfor %}
+
+<h2>Logements</h2>
+{% for l in lodgings %}
+  <fieldset><legend>{{ l.name }} ({{ l.destination.name }})</legend>
+    <label><input type="radio" name="lodging_{{ l.pk }}" value="2"{% if l.my_score == 2 %} checked{% endif %}> Oui</label>
+    <label><input type="radio" name="lodging_{{ l.pk }}" value="1"{% if l.my_score == 1 %} checked{% endif %}> Peut-être</label>
+    <label><input type="radio" name="lodging_{{ l.pk }}" value="0"{% if l.my_score == 0 %} checked{% endif %}> Non</label>
+    <label><input type="radio" name="lodging_{{ l.pk }}" value=""{% if l.my_score is None %} checked{% endif %}> Pas d’avis</label>
+  </fieldset>
+{% empty %}<p>Aucun logement.</p>{% endfor %}
+
+<button>Enregistrer</button>
+</form>
+<p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
+{% endblock %}

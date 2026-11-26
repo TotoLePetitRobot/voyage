@@ -144,6 +144,7 @@ class Destination(models.Model):
                                     on_delete=models.SET_NULL,
                                     related_name="proposed_destinations")
     created_at = models.DateTimeField(auto_now_add=True)
+    is_shortlisted = models.BooleanField("Pré-choix", default=False)
 
     class Meta:
         ordering = ["created_at"]
@@ -175,6 +176,7 @@ class DateOption(models.Model):
     proposed_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name="proposed_dates")
     created_at = models.DateTimeField(auto_now_add=True)
+    is_shortlisted = models.BooleanField("Pré-choix", default=False)
 
     class Meta:
         ordering = ["start_date", "end_date"]
@@ -330,6 +332,12 @@ class Leg(models.Model):
                                     related_name="proposed_legs")
     passengers = models.ManyToManyField(Member, blank=True, related_name="rides")
     created_at = models.DateTimeField(auto_now_add=True)
+    destination = models.ForeignKey(
+        Destination, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="legs", verbose_name="Destination concernée")
+    date_option = models.ForeignKey(
+        DateOption, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="legs", verbose_name="Période concernée")
 
     class Meta:
         ordering = ["departure_at", "id"]
@@ -377,6 +385,9 @@ class Lodging(models.Model):
     proposed_by = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name="proposed_lodgings")
     created_at = models.DateTimeField(auto_now_add=True)
+    date_option = models.ForeignKey(
+        DateOption, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="lodgings", verbose_name="Période concernée")
 
     class Meta:
         ordering = ["created_at"]

@@ -4,6 +4,10 @@
 <h1>Trajets – {{ trip.name }}</h1>
 <p>Décrivez l’aller et le retour. Si un trajet existe déjà (même type, mêmes lieux, mêmes heures), utilisez « Prendre ce trajet » : vous êtes ajouté à la liste sans créer de doublon.</p>
 
+{% if shortlist.configured %}
+<p class="notice">{% if shortlist.show_all %}Tous les éléments sont affichés. <a href="?">Revenir au pré-choix</a>{% else %}Affichage limité au <b>pré-choix</b> des organisateurs : les destinations et périodes non cochées sont masquées (un élément qui n’est lié à aucune destination ni période reste visible). <a href="?tout=1">Tout afficher</a>{% endif %}</p>
+{% endif %}
+
 {% for section in sections %}
   <h2>{{ section.label }}</h2>
   {% if section.legs %}

@@ -1,0 +1,4 @@
+{% if obj.is_shortlisted %}<span class="badge ok">★ Pré-choix</span>{% endif %}
+{% if can_manage %}
+<button type="submit" form="short-{{ kind }}-{{ obj.pk }}" name="on" value="{% if not obj.is_shortlisted %}1{% endif %}" class="short-btn{% if obj.is_shortlisted %} active{% endif %}" aria-pressed="{% if obj.is_shortlisted %}true{% else %}false{% endif %}">{% if obj.is_shortlisted %}Retirer du pré-choix{% else %}Pré-choisir{% endif %}</button>
+{% endif %}

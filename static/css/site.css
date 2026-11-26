@@ -183,3 +183,7 @@ details.accordion > summary { flex-wrap: wrap; }
 .vote .vote-btn.active[data-score="0"] { background: var(--danger); border-color: var(--danger); }
 .vote-counts { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
 
+.short-btn { padding: 3px 10px; font-size: 13px; font-weight: 500; background: transparent; color: var(--brand); border: 1px dashed var(--brand); border-radius: 999px; }
+.short-btn:hover { filter: none; background: var(--brand-soft); }
+.short-btn.active { background: var(--brand); color: var(--brand-ink); border-style: solid; }
+

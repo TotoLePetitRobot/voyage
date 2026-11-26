@@ -18,7 +18,7 @@ from .backup import backup_sqlite
 from .calendar_utils import build_calendar
 from .importers import parse_destinations
 from .leg_utils import leg_key, normalize_place, sort_key
-from .links import lodging_links, sncf_phrase, train_links
+from .links import lodging_links, sncf_phrase, train_links, interrail_timestamp_ms
 from .models import (DateOption, Destination, Expense, ExpenseShare, Meal, 
                      MealItem, Member, SolidarityPref, Trip, Leg, DateVote,
                      DestVote, Lodging, Poll, PollOption, PollVote, LegParticipant,
@@ -28,6 +28,7 @@ from .polls import parse_options, tally, votes_from_post
 from .ranking import summarize, top_pairs
 from .settlement import allocate, compute_owed, equal_split, suggest_transfers
 from .shopping import aggregate, format_line, parse_line
+from .shortlist import is_visible
 from .views import trip_balances, trip_calc
 
 class SpectatorTests(TestCase):
@@ -2162,3 +2163,326 @@ class InlineVoteTests(TestCase):
         self.vote("dest", "2")
         r = self.client.get(reverse("votes", args=[self.trip.pk]))
         self.assertContains(r, 'name="dest_%d" value="2" checked' % self.dest.pk)
+
+class ShortlistLogicTests(SimpleTestCase):
+    def test_visibility(self):
+        self.assertTrue(is_visible(1, 2, set(), set()))
+        self.assertTrue(is_visible(None, None, {1}, {2}))      # rien de lié : jamais masqué
+        self.assertTrue(is_visible(1, None, {1}, {2}))
+        self.assertFalse(is_visible(3, None, {1}, set()))
+        self.assertTrue(is_visible(3, None, set(), {2}))        # filtre des destinations inactif
+        self.assertFalse(is_visible(None, 5, {1}, {2}))
+        self.assertFalse(is_visible(1, 5, {1}, {2}))
+        self.assertFalse(is_visible(3, 2, {1}, {2}))
+        self.assertTrue(is_visible(1, 2, {1}, {2}))
+
+
+class InterrailLinkTests(SimpleTestCase):
+    def test_timestamp_is_six_in_the_morning_in_paris(self):
+        self.assertEqual(interrail_timestamp_ms(date(2027, 2, 6)), 1801890000000)    # 05:00 UTC
+        self.assertEqual(interrail_timestamp_ms(date(2027, 2, 13)), 1802494800000)
+        self.assertEqual(interrail_timestamp_ms(date(2027, 7, 10)), 1815192000000)   # 04:00 UTC (été)
+        self.assertEqual(interrail_timestamp_ms(date(2027, 3, 27)), 1806123600000)   # veille du changement d'heure
+        self.assertEqual(interrail_timestamp_ms(date(2027, 3, 28)), 1806206400000)   # jour du changement d'heure
+
+    def interrail_urls(self, *args):
+        return [l["url"] for l in train_links(*args) if "interrail.com" in l["url"]]
+
+    def test_link_format(self):
+        self.assertEqual(
+            self.interrail_urls("Saint-Étienne", "Gare de Lyon", "", date(2027, 2, 6)),
+            ["https://www.interrail.com/en/book-reservations?t=1801890000000"
+             "&ol=Saint-%C3%89tienne&dl=Gare%20de%20Lyon&vl=&vv=&ar=false&tv=1&mct=1"])
+
+    def test_station_replaces_the_destination(self):
+        urls = self.interrail_urls("Lyon", "Chamonix", "Gare de Chamonix-Mont-Blanc", date(2027, 2, 6))
+        self.assertIn("&dl=Gare%20de%20Chamonix-Mont-Blanc&", urls[0])
+
+    def test_without_a_date_there_is_no_timestamp(self):
+        urls = self.interrail_urls("A", "B")
+        self.assertEqual(urls, ["https://www.interrail.com/en/book-reservations?ol=A&dl=B"
+                                "&vl=&vv=&ar=false&tv=1&mct=1"])
+
+
+class InterrailSearchTests(TestCase):
+    def test_search_page_has_interrail_links_for_outward_and_return(self):
+        user = get_user_model().objects.create_user("anna", password="pw-test-123")
+        trip = Trip.objects.create(name="Test")
+        Member.objects.create(trip=trip, display_name="Anna", user=user,
+                              origin_city="Lyon", return_city="Paris")
+        dest = Destination.objects.create(trip=trip, name="Villard-de-Lans",
+                                          nearest_station="Grenoble")
+        DateOption.objects.create(trip=trip, start_date=date(2027, 2, 6),
+                                  end_date=date(2027, 2, 13))
+        self.client.force_login(user)
+        page = self.client.get(reverse("search", args=[trip.pk, dest.pk]))
+        self.assertContains(page, "book-reservations?t=1801890000000&amp;ol=Lyon&amp;dl=Grenoble&amp;vl=")
+        self.assertContains(page, "book-reservations?t=1802494800000&amp;ol=Grenoble&amp;dl=Paris&amp;vl=")
+
+
+class ShortlistTests(TestCase):
+    LEG_PLACES = {"free": "Orly", "cham": "Roissy", "lisb": "Bercy", "feb": "Austerlitz",
+                  "mar": "Montparnasse", "cham_mar": "Part-Dieu"}
+    LODGING_NAMES = {"cham": "Chalet Mélèze", "lisb": "Appartement Alfama",
+                     "feb": "Studio Février", "mar": "Studio Mars"}
+
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "coorga", "simple", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test", allow_spectators=True)
+        roles = {"coorga": ["coorganizer"]}
+        for n in names[:3]:
+            Member.objects.create(trip=self.trip, display_name=n.title(), user=self.users[n],
+                                  roles=roles.get(n, []), is_organizer=(n == "orga"))
+        self.cham = Destination.objects.create(trip=self.trip, name="Chamonix")
+        self.lisb = Destination.objects.create(trip=self.trip, name="Lisbonne")
+        self.feb = DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                             end_date=date(2027, 2, 13))
+        self.mar = DateOption.objects.create(trip=self.trip, start_date=date(2027, 3, 6),
+                                             end_date=date(2027, 3, 13))
+        names_ = self.LODGING_NAMES
+        self.l_cham = Lodging.objects.create(destination=self.cham, name=names_["cham"])
+        self.l_lisb = Lodging.objects.create(destination=self.lisb, name=names_["lisb"])
+        Lodging.objects.create(destination=self.cham, name=names_["feb"], date_option=self.feb)
+        Lodging.objects.create(destination=self.cham, name=names_["mar"], date_option=self.mar)
+
+        def leg(key, **kw):
+            Leg.objects.create(trip=self.trip, name=f"Trajet {key}", transport="train",
+                               departure_place=self.LEG_PLACES[key], arrival_place="Arrivee",
+                               direction="out", **kw)
+
+        leg("free")
+        leg("cham", destination=self.cham)
+        leg("lisb", destination=self.lisb)
+        leg("feb", date_option=self.feb)
+        leg("mar", date_option=self.mar)
+        leg("cham_mar", destination=self.cham, date_option=self.mar)
+        pk = self.trip.pk
+        self.lodgings_url = reverse("lodgings", args=[pk])
+        self.legs_url = reverse("legs", args=[pk])
+        self.client.force_login(self.users["simple"])
+
+    def html(self, url, **params):
+        return self.client.get(url, params).content.decode()
+
+    def visible(self, html, markers):
+        return {key for key, marker in markers.items() if marker in html}
+
+    def shortlist(self, dests=(), dates=()):
+        Destination.objects.filter(pk__in=[d.pk for d in dests]).update(is_shortlisted=True)
+        DateOption.objects.filter(pk__in=[d.pk for d in dates]).update(is_shortlisted=True)
+
+    def test_without_a_pre_choice_everything_is_shown(self):
+        lodging_page, legs_page = self.html(self.lodgings_url), self.html(self.legs_url)
+        self.assertEqual(self.visible(lodging_page, self.LODGING_NAMES), set(self.LODGING_NAMES))
+        self.assertEqual(self.visible(legs_page, self.LEG_PLACES), set(self.LEG_PLACES))
+        self.assertNotIn("Affichage limité", lodging_page)
+
+    def test_a_pre_chosen_destination_hides_the_others(self):
+        self.shortlist(dests=[self.cham])
+        lodging_page, legs_page = self.html(self.lodgings_url), self.html(self.legs_url)
+        self.assertEqual(self.visible(lodging_page, self.LODGING_NAMES), {"cham", "feb", "mar"})
+        self.assertNotIn("<h2>Lisbonne</h2>", lodging_page)
+        self.assertEqual(self.visible(legs_page, self.LEG_PLACES),
+                         {"free", "cham", "feb", "mar", "cham_mar"})
+        self.assertIn("Affichage limité", lodging_page)
+        self.assertIn("Tout afficher", legs_page)
+
+    def test_a_pre_chosen_period_hides_the_others(self):
+        self.shortlist(dates=[self.feb])
+        self.assertEqual(self.visible(self.html(self.lodgings_url), self.LODGING_NAMES),
+                         {"cham", "lisb", "feb"})
+        self.assertEqual(self.visible(self.html(self.legs_url), self.LEG_PLACES),
+                         {"free", "cham", "lisb", "feb"})
+
+    def test_both_filters_combine(self):
+        self.shortlist(dests=[self.cham], dates=[self.feb])
+        self.assertEqual(self.visible(self.html(self.lodgings_url), self.LODGING_NAMES),
+                         {"cham", "feb"})
+        self.assertEqual(self.visible(self.html(self.legs_url), self.LEG_PLACES),
+                         {"free", "cham", "feb"})
+
+    def test_show_all_bypasses_the_filter(self):
+        self.shortlist(dests=[self.cham], dates=[self.feb])
+        lodging_page = self.html(self.lodgings_url, tout="1")
+        self.assertEqual(self.visible(lodging_page, self.LODGING_NAMES), set(self.LODGING_NAMES))
+        self.assertEqual(self.visible(self.html(self.legs_url, tout="1"), self.LEG_PLACES),
+                         set(self.LEG_PLACES))
+        self.assertIn("Revenir au pré-choix", lodging_page)
+
+    def test_only_managers_can_toggle_pre_choices(self):
+        dest_url = reverse("destination_shortlist", args=[self.cham.pk])
+        date_url = reverse("date_shortlist", args=[self.feb.pk])
+        self.assertEqual(self.client.post(dest_url, {"on": "1"}).status_code, 403)
+        self.assertEqual(self.client.post(date_url, {"on": "1"}).status_code, 403)
+        for name in ("orga", "coorga"):
+            self.client.force_login(self.users[name])
+            self.client.post(dest_url, {"on": "1"})
+            self.client.post(date_url, {"on": "1"})
+            self.cham.refresh_from_db()
+            self.feb.refresh_from_db()
+            self.assertTrue(self.cham.is_shortlisted and self.feb.is_shortlisted)
+            self.client.post(dest_url, {"on": ""})
+            self.client.post(date_url, {"on": ""})
+            self.cham.refresh_from_db()
+            self.feb.refresh_from_db()
+            self.assertFalse(self.cham.is_shortlisted or self.feb.is_shortlisted)
+
+    def test_anonymous_outsiders_and_spectators_cannot_toggle(self):
+        url = reverse("destination_shortlist", args=[self.cham.pk])
+        self.client.force_login(self.users["stranger"])
+        self.assertEqual(self.client.post(url, {"on": "1"}).status_code, 404)
+        self.client.logout()
+        r = self.client.post(url, {"on": "1"})
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+        self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+        self.assertEqual(self.client.post(url, {"on": "1"}).status_code, 403)
+        self.cham.refresh_from_db()
+        self.assertFalse(self.cham.is_shortlisted)
+
+    def test_toggle_redirects_back_to_the_item(self):
+        self.client.force_login(self.users["orga"])
+        r = self.client.post(reverse("destination_shortlist", args=[self.cham.pk]), {"on": "1"})
+        self.assertRedirects(
+            r, f"{reverse('destination_list', args=[self.trip.pk])}#dest-{self.cham.pk}",
+            fetch_redirect_response=False)
+        r = self.client.post(reverse("date_shortlist", args=[self.feb.pk]), {"on": "1"})
+        self.assertRedirects(
+            r, f"{reverse('date_list', args=[self.trip.pk])}#period-{self.feb.pk}",
+            fetch_redirect_response=False)
+
+    def test_buttons_for_managers_and_badges_for_everyone(self):
+        self.shortlist(dests=[self.cham])
+        member_page = self.html(reverse("destination_list", args=[self.trip.pk]))
+        self.assertIn("★ Pré-choix", member_page)
+        self.assertNotIn("Retirer du pré-choix", member_page)
+        self.client.force_login(self.users["orga"])
+        manager_page = self.html(reverse("destination_list", args=[self.trip.pk]))
+        self.assertIn("Retirer du pré-choix", manager_page)
+        self.assertIn("Pré-choisir", manager_page)
+
+    def test_forms_only_accept_periods_and_destinations_of_the_trip(self):
+        other = Trip.objects.create(name="Autre")
+        foreign_date = DateOption.objects.create(trip=other, start_date=date(2027, 5, 1),
+                                                 end_date=date(2027, 5, 8))
+        foreign_dest = Destination.objects.create(trip=other, name="Étranger")
+        add_leg = reverse("leg_add", args=[self.trip.pk])
+        leg_data = {"direction": "out", "name": "Piège", "transport": "train",
+                    "departure_place": "Paris", "arrival_place": "Grenoble",
+                    "status": "planned"}
+        r = self.client.post(reverse("lodging_add", args=[self.cham.pk]),
+                             {"name": "Piège", "date_option": foreign_date.pk})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(Lodging.objects.filter(name="Piège").exists())
+        for field, value in (("destination", foreign_dest.pk), ("date_option", foreign_date.pk)):
+            r = self.client.post(add_leg, {**leg_data, field: value})
+            self.assertEqual(r.status_code, 200, field)
+        self.assertFalse(Leg.objects.filter(name="Piège").exists())
+        r = self.client.post(add_leg, {**leg_data, "destination": self.cham.pk,
+                                       "date_option": self.feb.pk})
+        self.assertEqual(r.status_code, 302)
+        leg = Leg.objects.get(name="Piège")
+        self.assertEqual((leg.destination, leg.date_option), (self.cham, self.feb))
+
+    def test_summary_lists_lodging_votes_and_marks_pre_choices(self):
+        members = {m.display_name: m for m in self.trip.members.all()}
+        LodgingVote.objects.create(member=members["Simple"], lodging=self.l_cham, score=2)
+        LodgingVote.objects.create(member=members["Orga"], lodging=self.l_cham, score=1)
+        LodgingVote.objects.create(member=members["Orga"], lodging=self.l_lisb, score=0)
+        self.shortlist(dests=[self.cham])
+        html = self.html(reverse("trip_summary", args=[self.trip.pk]))
+        self.assertLess(html.index("Chalet Mélèze"), html.index("Appartement Alfama"))
+        self.assertIn("<td>★ Chamonix</td>", html)
+        self.assertNotIn("★ Lisbonne", html)
+
+
+class VirtualVotesTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "coorga", "simple", "stranger")
+        self.users = {n: U.objects.create_user(n, password="pw-test-123") for n in names}
+        self.trip = Trip.objects.create(name="Test")
+        roles = {"coorga": ["coorganizer"]}
+        self.m = {n: Member.objects.create(trip=self.trip, display_name=n.title(),
+                                           user=self.users[n], roles=roles.get(n, []),
+                                           is_organizer=(n == "orga"))
+                  for n in names[:3]}
+        self.lou = Member.objects.create(trip=self.trip, display_name="Lou")   # place fictive
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix")
+        self.opt = DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                             end_date=date(2027, 2, 13))
+        self.lodging = Lodging.objects.create(destination=self.dest, name="Chalet")
+        self.url = reverse("virtual_votes", args=[self.trip.pk, self.lou.pk])
+
+    def votes(self):
+        return {
+            "dest": dict(DestVote.objects.filter(member=self.lou).values_list("destination_id", "score")),
+            "date": dict(DateVote.objects.filter(member=self.lou).values_list("date_option_id", "score")),
+            "lodging": dict(LodgingVote.objects.filter(member=self.lou).values_list("lodging_id", "score")),
+        }
+
+    def data(self, dest="2", date_="1", lodging="0"):
+        return {f"dest_{self.dest.pk}": dest, f"date_{self.opt.pk}": date_,
+                f"lodging_{self.lodging.pk}": lodging}
+
+    def test_managers_vote_for_a_virtual_member(self):
+        for name in ("orga", "coorga"):
+            self.client.force_login(self.users[name])
+            r = self.client.post(self.url, self.data())
+            self.assertRedirects(r, reverse("trip_detail", args=[self.trip.pk]),
+                                 fetch_redirect_response=False)
+            self.assertEqual(self.votes(), {"dest": {self.dest.pk: 2}, "date": {self.opt.pk: 1},
+                                            "lodging": {self.lodging.pk: 0}})
+
+    def test_page_shows_the_current_votes_and_no_opinion_clears_them(self):
+        self.client.force_login(self.users["orga"])
+        self.client.post(self.url, self.data())
+        page = self.client.get(self.url)
+        self.assertContains(page, f'name="dest_{self.dest.pk}" value="2" checked')
+        self.assertContains(page, f'name="lodging_{self.lodging.pk}" value="0" checked')
+        self.client.post(self.url, self.data(dest="", date_="", lodging=""))
+        self.assertEqual(self.votes(), {"dest": {}, "date": {}, "lodging": {}})
+
+    def test_invalid_scores_are_ignored(self):
+        self.client.force_login(self.users["orga"])
+        self.client.post(self.url, self.data(dest="9", date_="abc", lodging="-1"))
+        self.assertEqual(self.votes(), {"dest": {}, "date": {}, "lodging": {}})
+
+    def test_virtual_votes_count_in_the_totals(self):
+        self.client.force_login(self.users["orga"])
+        self.client.post(self.url, self.data())
+        page = self.client.get(reverse("destination_list", args=[self.trip.pk]))
+        self.assertContains(page, "2 pts")
+
+    def test_only_managers_can_do_it(self):
+        self.client.force_login(self.users["simple"])
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.post(self.url, self.data()).status_code, 403)
+        self.assertEqual(self.votes(), {"dest": {}, "date": {}, "lodging": {}})
+
+    def test_real_members_and_other_trips_are_not_editable(self):
+        self.client.force_login(self.users["orga"])
+        real = reverse("virtual_votes", args=[self.trip.pk, self.m["simple"].pk])
+        self.assertEqual(self.client.get(real).status_code, 404)
+        other = Trip.objects.create(name="Autre")
+        foreign = Member.objects.create(trip=other, display_name="Zoé")
+        self.assertEqual(self.client.get(
+            reverse("virtual_votes", args=[self.trip.pk, foreign.pk])).status_code, 404)
+
+    def test_outsiders_and_anonymous_visitors_are_refused(self):
+        self.client.force_login(self.users["stranger"])
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+        self.client.logout()
+        r = self.client.get(self.url)
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+
+    def test_trip_page_links_to_it_for_managers_only(self):
+        trip_page = reverse("trip_detail", args=[self.trip.pk])
+        self.client.force_login(self.users["orga"])
+        self.assertContains(self.client.get(trip_page), self.url)
+        self.client.force_login(self.users["simple"])
+        self.assertNotContains(self.client.get(trip_page), self.url)
+

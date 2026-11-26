@@ -26,6 +26,7 @@
 <ul>
   {% for m in members %}{% if m.is_virtual %}
     <li>{{ m.label }}
+      <a href="{% url 'virtual_votes' trip.pk m.pk %}">Voter à sa place</a>
       <form method="post" action="{% url 'virtual_delete' trip.pk %}" style="display:inline"
             onsubmit="return confirm('Retirer cette place ?')">{% csrf_token %}
         <input type="hidden" name="member_id" value="{{ m.pk }}">

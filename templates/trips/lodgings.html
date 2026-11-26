@@ -3,6 +3,10 @@
 <h1>Logements – {{ trip.name }}</h1>
 <p>Proposez des logements pour chaque destination. Seul le nom est obligatoire : tous les autres champs peuvent être remplis plus tard. Votez à droite de chaque logement (Oui = 2 points, Peut-être = 1, Non = 0), et cliquez à nouveau sur votre choix pour le retirer.</p>
 
+{% if shortlist.configured %}
+<p class="notice">{% if shortlist.show_all %}Tous les éléments sont affichés. <a href="?">Revenir au pré-choix</a>{% else %}Affichage limité au <b>pré-choix</b> des organisateurs : les destinations et périodes non cochées sont masquées (un élément qui n’est lié à aucune destination ni période reste visible). <a href="?tout=1">Tout afficher</a>{% endif %}</p>
+{% endif %}
+
 {% for section in sections %}
   <h2>{{ section.destination.name }}</h2>
   {% for l in section.lodgings %}
@@ -15,6 +19,10 @@
       {% endif %}
       <p class="vote-counts" data-vote-counts>Oui {{ l.yes }} · Peut-être {{ l.maybe }} · Non {{ l.no }}</p>
       <dl>
+        {% if l.date_option %}
+          <dt>Période</dt>
+          <dd>du {{ l.date_option.start_date|date:"j F Y" }} au {{ l.date_option.end_date|date:"j F Y" }}</dd>
+        {% endif %}
         {% if l.start_date or l.end_date %}
           <dt>Dates</dt>
           <dd>{% if l.start_date %}du {{ l.start_date|date:"j F Y" }}{% endif %}{% if l.end_date %} au {{ l.end_date|date:"j F Y" }}{% endif %}</dd>

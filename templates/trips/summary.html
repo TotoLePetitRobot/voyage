@@ -21,7 +21,7 @@
 <table>
   <tr><th>Destination</th><th>Oui</th><th>Peut-être</th><th>Non</th><th>Score</th></tr>
   {% for d in destinations %}
-  <tr><td>{{ d.name }}</td><td>{{ d.yes }}</td><td>{{ d.maybe }}</td><td>{{ d.no }}</td><td><b>{{ d.total }}</b></td></tr>
+  <tr><td>{% if d.is_shortlisted %}★ {% endif %}{{ d.name }}</td><td>{{ d.yes }}</td><td>{{ d.maybe }}</td><td>{{ d.no }}</td><td><b>{{ d.total }}</b></td></tr>
   {% empty %}<tr><td colspan="5">Aucune destination.</td></tr>
   {% endfor %}
 </table>
@@ -30,9 +30,20 @@
 <table>
   <tr><th>Période</th><th>Oui</th><th>Peut-être</th><th>Non</th><th>Score</th></tr>
   {% for o in dates %}
-  <tr><td>{{ o.start_date|date:"j F Y" }} → {{ o.end_date|date:"j F Y" }} ({{ o.nights }} nuit{{ o.nights|pluralize }})</td>
+  <tr><td>{% if o.is_shortlisted %}★ {% endif %}{{ o.start_date|date:"j F Y" }} → {{ o.end_date|date:"j F Y" }} ({{ o.nights }} nuit{{ o.nights|pluralize }})</td>
       <td>{{ o.yes }}</td><td>{{ o.maybe }}</td><td>{{ o.no }}</td><td><b>{{ o.total }}</b></td></tr>
   {% empty %}<tr><td colspan="5">Aucune période.</td></tr>
+  {% endfor %}
+</table>
+
+<p><small>★ = pré-choix des organisateurs.</small></p>
+
+<h2>Logements</h2>
+<table>
+  <tr><th>Logement</th><th>Destination</th><th>Oui</th><th>Peut-être</th><th>Non</th><th>Score</th></tr>
+  {% for l in lodging_rows %}
+  <tr><td>{{ l.name }}</td><td>{{ l.destination.name }}</td><td>{{ l.yes }}</td><td>{{ l.maybe }}</td><td>{{ l.no }}</td><td><b>{{ l.total }}</b></td></tr>
+  {% empty %}<tr><td colspan="6">Aucun logement proposé.</td></tr>
   {% endfor %}
 </table>
 

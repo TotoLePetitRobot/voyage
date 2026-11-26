@@ -63,4 +63,9 @@ urlpatterns = [
     path("destinations/<int:dest_pk>/vote/", views.destination_vote, name="destination_vote"),
     path("dates/<int:opt_pk>/vote/", views.date_vote, name="date_vote"),
     path("logements/<int:lodging_pk>/vote/", views.lodging_vote, name="lodging_vote"),
+    path("destinations/<int:dest_pk>/prechoix/", views.destination_shortlist,
+         name="destination_shortlist"),
+    path("dates/<int:opt_pk>/prechoix/", views.date_shortlist, name="date_shortlist"),
+    path("voyages/<int:pk>/membres/<int:member_pk>/votes/", views.virtual_votes,
+         name="virtual_votes"),
 ]
