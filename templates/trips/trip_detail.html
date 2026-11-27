@@ -15,8 +15,14 @@
 {% if me.is_spectator %}{% else %}
 {% if me.can_manage %}
 <h3>Mode spectateur</h3>
-<p>{% if trip.allow_spectators %}Activé : toute personne qui a le lien d’invitation peut consulter le voyage en lecture seule, sans budget, votes personnels ni villes de départ.{% else %}Désactivé : il faut un compte pour voir le voyage.{% endif %}</p>
+<p>{% if trip.allow_spectators %}Activé : toute personne qui a le lien d’invitation peut consulter le voyage, sans votes personnels, budgets déclarés ni villes de départ.{% else %}Désactivé : il faut un compte pour voir le voyage.{% endif %}</p>
 <form method="post" action="{% url 'spectators_toggle' trip.pk %}">{% csrf_token %}<button>{% if trip.allow_spectators %}Désactiver{% else %}Activer{% endif %}</button></form>
+{% if trip.allow_spectators %}
+<p><b>Budget visible :</b> {% if trip.spectator_budget %}oui. Les spectateurs voient les soldes, remboursements et dépenses, sauf les dépenses cachées.{% else %}non.{% endif %}</p>
+<form method="post" action="{% url 'spectator_option' trip.pk 'budget' %}">{% csrf_token %}<button name="on" value="{% if not trip.spectator_budget %}1{% endif %}">{% if trip.spectator_budget %}Masquer le budget{% else %}Rendre le budget visible{% endif %}</button></form>
+<p><b>Contributions :</b> {% if trip.spectator_contribute %}autorisées. Les spectateurs peuvent proposer destinations, périodes, logements et repas, commenter et suggérer, sous un nom facultatif non vérifié. Ils ne peuvent ni voter, ni modifier, ni supprimer.{% else %}fermées.{% endif %}</p>
+<form method="post" action="{% url 'spectator_option' trip.pk 'contribute' %}">{% csrf_token %}<button name="on" value="{% if not trip.spectator_contribute %}1{% endif %}">{% if trip.spectator_contribute %}Fermer les contributions{% else %}Autoriser les contributions{% endif %}</button></form>
+{% endif %}
 
 <h3>Membres fictifs</h3>
 <form method="post" action="{% url 'virtual_add' trip.pk %}">{% csrf_token %}

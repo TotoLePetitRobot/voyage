@@ -16,7 +16,7 @@ admin.site.register(DestVote)
 admin.site.register(LodgingVote)
 @admin.register(Feedback)
 class FeedbackAdmin(admin.ModelAdmin):
-    list_display = ("created_at", "user", "page_name", "path", "short_message", "handled")
+    list_display = ("created_at", "user", "author_name", "page_name", "path", "short_message", "handled")
     list_filter = ("handled", "page_name")
     list_editable = ("handled",)
     search_fields = ("message", "path", "user__username")

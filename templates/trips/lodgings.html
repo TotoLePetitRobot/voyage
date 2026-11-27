@@ -42,13 +42,13 @@
         <form method="post" action="{% url 'lodging_delete' l.pk %}" style="display:inline"
               onsubmit="return confirm('Supprimer ce logement ?')">{% csrf_token %}<button>Supprimer</button></form></p>
       {% endif %}
-    {% include "trips/_comments.html" with obj=l kind="logement" can_comment=can_vote %}
+    {% include "trips/_comments.html" with obj=l kind="logement" can_comment=can_add %}
     </div>
   </details>
   {% empty %}
     <p>Aucun logement proposé pour l’instant.</p>
   {% endfor %}
-  {% if not request.spectator %}
+  {% if can_add %}
     <p><a href="{% url 'lodging_add' section.destination.pk %}">Proposer un logement pour {{ section.destination.name }}</a></p>
   {% endif %}
 {% empty %}

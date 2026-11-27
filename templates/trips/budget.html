@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Budget partagé – {{ trip.name }}</h1>
-{% if not me.is_spectator %}
+{% if not request.spectator %}
 <p><a href="{% url 'expense_add' trip.pk %}">Ajouter une dépense</a> ·
    <a href="{% url 'solidarity' trip.pk %}">Ma solidarité (privé)</a></p>
 {% endif %}

@@ -3,7 +3,7 @@
   <h4>Commentaires ({{ obj.comment_list|length }})</h4>
   {% for c in obj.comment_list %}
     <div class="comment">
-      <small><b>{{ c.author.label|default:"Ancien membre" }}</b> · {{ c.created_at|date:"j F Y, H:i" }}</small>
+      <small><b>{% if c.author %}{{ c.author.label }}{% elif c.is_visitor %}{{ c.author_name|default:"Visiteur" }} <span class="muted">(visiteur)</span>{% else %}Ancien membre{% endif %}</b> · {{ c.created_at|date:"j F Y, H:i" }}</small>
       <p>{{ c.body|linebreaksbr }}</p>
       {% if c.can_delete %}
         <form method="post" action="{% url 'comment_delete' c.pk %}"
@@ -14,6 +14,7 @@
     <p><small>Aucun commentaire pour l’instant.</small></p>
   {% endfor %}
   <form method="post" action="{% url 'comment_add' kind obj.pk %}">{% csrf_token %}
+    {% if request.spectator %}<p><input type="text" name="name" maxlength="30" placeholder="Votre nom (facultatif)"></p>{% endif %}
     <textarea name="body" rows="2" maxlength="1000" required placeholder="Ajouter un commentaire…"></textarea>
     <button>Commenter</button>
   </form>

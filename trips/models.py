@@ -46,6 +46,8 @@ class Trip(models.Model):
     tabs_config = models.JSONField("Configuration des onglets", default=dict,
                                    blank=True)
     allow_spectators = models.BooleanField("Mode spectateur ouvert", default=False)
+    spectator_budget = models.BooleanField("Budget visible aux spectateurs", default=False)
+    spectator_contribute = models.BooleanField("Contributions des spectateurs", default=False)
 
     def __str__(self):
         return self.name
@@ -463,6 +465,8 @@ class Comment(models.Model):
                                     on_delete=models.CASCADE, related_name="comments")
     lodging = models.ForeignKey(Lodging, null=True, blank=True,
                                 on_delete=models.CASCADE, related_name="comments")
+    is_visitor = models.BooleanField(default=False)
+    author_name = models.CharField("Nom (visiteur)", max_length=30, blank=True)
 
     class Meta:
         ordering = ["created_at", "id"]
@@ -490,6 +494,7 @@ class Feedback(models.Model):
     message = models.TextField("Message")
     created_at = models.DateTimeField(auto_now_add=True)
     handled = models.BooleanField("Traité", default=False)
+    author_name = models.CharField("Nom", max_length=30, blank=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]

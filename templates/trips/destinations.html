@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Destinations – {{ trip.name }}</h1>
-{% if not request.spectator %}
-<p><a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a> ·
-   <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a></p>
+{% if can_add %}
+<p><a href="{% url 'destination_add' trip.pk %}">Ajouter une destination</a>
+   {% if not request.spectator %} · <a href="{% url 'destination_import' trip.pk %}">Importer un fichier CSV</a>{% endif %}</p>
 {% endif %}
 <p><small>Votez à droite de chaque destination : Oui = 2 points, Peut-être = 1, Non = 0. Cliquez à nouveau sur votre choix pour retirer votre vote. Les votes individuels ne sont pas montrés.</small></p>
 
@@ -41,7 +41,7 @@
       {% endif %}
     </p>
     {% endif %}
-  {% include "trips/_comments.html" with obj=d kind="destination" can_comment=can_vote %}
+  {% include "trips/_comments.html" with obj=d kind="destination" can_comment=can_add %}
   </div>
 </details>
 {% empty %}

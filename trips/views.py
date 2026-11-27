@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.views import redirect_to_login
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Count, Q, Sum, Prefetch
@@ -35,7 +36,7 @@ from .settlement import (compute_balances, compute_owed, suggest_transfers,
                          to_cents, to_milli)
 from .shopping import aggregate
 from .shortlist import is_visible
-from .spectator import SPECTATOR_KEY, SPECTATOR_VIEWS, Spectator
+from .spectator import SPECTATOR_KEY, SPECTATOR_POST_VIEWS, Spectator, spectator_views
 
 def get_trip_and_member(request, pk, require_pseudo=True):
     # 1. Un membre connecté a toujours tous ses droits, même avec une session spectateur.
@@ -46,17 +47,24 @@ def get_trip_and_member(request, pk, require_pseudo=True):
             if require_pseudo and not me.display_name.strip():
                 raise PseudoRequired(trip.pk)
             return trip, me
-    # 2. Spectateur : lecture seule, uniquement les pages autorisées, voyage ouvert.
+    # 2. Spectateur : pages et actions autorisées selon les options du voyage.
     if str(pk) in (request.session.get(SPECTATOR_KEY) or []):
+        trip = get_object_or_404(Trip, pk=pk, allow_spectators=True)
         url_name = getattr(request.resolver_match, "url_name", None)
-        if request.method not in ("GET", "HEAD") or url_name not in SPECTATOR_VIEWS:
+        if request.method in ("GET", "HEAD"):
+            allowed = url_name in spectator_views(trip)
+        else:
+            allowed = trip.spectator_contribute and url_name in SPECTATOR_POST_VIEWS
+        if not allowed:
             raise PermissionDenied
         request.spectator = True
-        return get_object_or_404(Trip, pk=pk, allow_spectators=True), Spectator()
+        request.spectator_contribute = trip.spectator_contribute
+        return trip, Spectator()
     # 3. Les autres
     if not request.user.is_authenticated:
         raise LoginRedirect
     raise Http404
+
 
 def trip_list(request):
     trips = []
@@ -197,19 +205,22 @@ def trip_pseudo(request, pk):
         return redirect("trip_detail", pk=trip.pk)
     return render(request, "trips/pseudo.html", {"form": form, "trip_name": trip.name})
 
-@login_required
 def destination_add(request, pk):
     trip, me = get_trip_and_member(request, pk)
     form = DestinationForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
+        if trip.destinations.count() >= MAX_DESTINATIONS:
+            messages.error(request, f"Maximum {MAX_DESTINATIONS} destinations par voyage.")
+            return redirect("destination_list", pk=trip.pk)
+        if _spectator_over_quota(request, me, trip):
+            return redirect("destination_list", pk=trip.pk)
         dest = form.save(commit=False)
         dest.trip = trip
-        dest.proposed_by = me
+        dest.proposed_by = real_member(me)
         dest.save()
         return redirect(f"{reverse('destination_list', args=[trip.pk])}#dest-{dest.pk}")
     return render(request, "trips/destination_form.html",
                   {"form": form, "trip": trip, "title": "Nouvelle destination"})
-
 
 @login_required
 def destination_edit(request, dest_pk):
@@ -310,9 +321,11 @@ def date_list(request, pk):
             form.add_error(None, f"Maximum {MAX_DATE_OPTIONS} périodes par voyage.")
         elif trip.date_options.filter(start_date=start, end_date=end).exists():
             form.add_error(None, "Cette période existe déjà.")
+        elif _spectator_over_quota(request, me, trip):
+            return redirect("date_list", pk=trip.pk)
         else:
             opt = form.save(commit=False)
-            opt.trip, opt.proposed_by = trip, me
+            opt.trip, opt.proposed_by = trip, real_member(me)
             opt.save()
             return redirect("date_list", pk=trip.pk)
     shown, offset = _calendar_window(request)
@@ -543,6 +556,7 @@ def trip_balances(trip):
 def budget(request, pk):
     trip, me = get_trip_and_member(request, pk)
     members, layers = trip_calc(trip)
+    visitor = getattr(me, "is_spectator", False)
     by_id = {m.pk: m for m in members}
 
     by_layer = {}
@@ -550,7 +564,7 @@ def budget(request, pk):
         "shares__member__user", "hidden_from")
     for e in expenses:
         key = frozenset(h.pk for h in e.hidden_from.all())
-        if me.pk in key:
+        if me.pk in key or (visitor and key):
             continue  # une dépense cachée à ce membre n'est jamais transmise au gabarit
         e.can_edit = me.can_edit_expense(e)
         by_layer.setdefault(key, []).append(e)
@@ -558,7 +572,7 @@ def budget(request, pk):
     shown = []
     for layer in layers:
         key = layer["key"]
-        if me.pk in key:
+        if me.pk in key or (visitor and key):
             continue
         balances = [{"label": m.label, "cents": layer["balances"][m.pk],
                      "amount": Decimal(abs(layer["balances"][m.pk])) / 100}
@@ -574,10 +588,9 @@ def budget(request, pk):
             "balances": balances, "transfers": transfers,
             "expenses": by_layer.get(key, []), "total": layer["total"],
         })
-
-    mine = layers[0]["detail"][me.pk]
+    mine = layers[0]["detail"].get(me.pk)
     my_detail = None
-    if mine["base"] != mine["pooled"] or mine["pooled"] != mine["final"]:
+    if mine and (mine["base"] != mine["pooled"] or mine["pooled"] != mine["final"]):
         my_detail = {k: Decimal(v) / 100 for k, v in mine.items()}
     return render(request, "trips/budget.html",
                   {"trip": trip, "layers": shown, "my_detail": my_detail, "me": me})
@@ -782,7 +795,7 @@ def _save_meal(form, trip, me):
     with transaction.atomic():
         meal = form.save(commit=False)
         if meal.pk is None:
-            meal.trip, meal.proposed_by = trip, me
+            meal.trip, meal.proposed_by = trip, real_member(me)
         meal.save()
         meal.items.all().delete()
         MealItem.objects.bulk_create([
@@ -803,16 +816,19 @@ def meals(request, pk):
     return render(request, "trips/meals.html", {"trip": trip, "days": sorted(days.items())})
 
 
-@login_required
 def meal_add(request, pk):
     trip, me = get_trip_and_member(request, pk)
     form = MealForm(request.POST or None, initial={"day": 1, "meal_type": 2})
     if request.method == "POST" and form.is_valid():
+        if trip.meals.count() >= MAX_MEALS:
+            messages.error(request, f"Maximum {MAX_MEALS} repas par voyage.")
+            return redirect("meals", pk=trip.pk)
+        if _spectator_over_quota(request, me, trip):
+            return redirect("meals", pk=trip.pk)
         _save_meal(form, trip, me)
         return redirect("meals", pk=trip.pk)
     return render(request, "trips/meal_form.html",
                   {"form": form, "trip": trip, "title": "Proposer un repas"})
-
 
 @login_required
 def meal_edit(request, meal_pk):
@@ -1197,7 +1213,6 @@ def lodgings(request, pk):
         "can_vote": can_vote, "shortlist": flt})
 
 
-@login_required
 def lodging_add(request, dest_pk):
     destination = get_object_or_404(Destination, pk=dest_pk)
     trip, me = get_trip_and_member(request, destination.trip_id)
@@ -1206,13 +1221,14 @@ def lodging_add(request, dest_pk):
         return redirect("lodgings", pk=trip.pk)
     form = LodgingForm(request.POST or None, trip=trip)
     if request.method == "POST" and form.is_valid():
+        if _spectator_over_quota(request, me, trip):
+            return redirect("lodgings", pk=trip.pk)
         lodging = form.save(commit=False)
-        lodging.destination, lodging.proposed_by = destination, me
+        lodging.destination, lodging.proposed_by = destination, real_member(me)
         lodging.save()
         return redirect("lodgings", pk=trip.pk)
     return render(request, "trips/lodging_form.html", {
         "form": form, "trip": trip, "title": f"Proposer un logement : {destination.name}"})
-
 
 def _lodging_for_member(request, lodging_pk):
     lodging = get_object_or_404(Lodging, pk=lodging_pk)
@@ -1510,21 +1526,18 @@ COMMENT_TARGETS = {
     "logement": (Lodging, "lodging", "lodgings", "lodging"),
 }
 
-
 def comments_for(trip, field, me):
-    """{id de l'élément: [commentaires]} en une seule requête. Les spectateurs n'en voient aucun."""
-    if getattr(me, "is_spectator", False):
+    """{id de l'élément: [commentaires]} en une seule requête. Les spectateurs n'en voient que
+    si les contributions sont ouvertes."""
+    visitor = getattr(me, "is_spectator", False)
+    if visitor and not trip.spectator_contribute:
         return {}
     grouped = {}
     rows = Comment.objects.filter(trip=trip, **{f"{field}__isnull": False}).select_related("author")
     for comment in rows:
-        comment.can_delete = me.can_manage or comment.author_id == me.pk
+        comment.can_delete = (not visitor) and (me.can_manage or comment.author_id == me.pk)
         grouped.setdefault(getattr(comment, f"{field}_id"), []).append(comment)
     return grouped
-
-
-def _comment_target_trip_id(obj):
-    return obj.destination.trip_id if isinstance(obj, Lodging) else obj.trip_id
 
 
 @require_POST
@@ -1535,15 +1548,25 @@ def comment_add(request, kind, pk):
     model, field, page, prefix = spec
     obj = get_object_or_404(model, pk=pk)
     trip, me = get_trip_and_member(request, _comment_target_trip_id(obj))
+    visitor = getattr(me, "is_spectator", False)
     back = f"{reverse(page, args=[trip.pk])}#{prefix}-{obj.pk}"
     body = (request.POST.get("body") or "").strip()
+    name = " ".join((request.POST.get("name") or "").split())[:30] if visitor else ""
     if not 1 <= len(body) <= MAX_COMMENT_LENGTH:
         messages.error(request, f"Un commentaire fait de 1 à {MAX_COMMENT_LENGTH} caractères.")
     elif Comment.objects.filter(**{field: obj}).count() >= MAX_COMMENTS_PER_ITEM:
         messages.error(request, f"{MAX_COMMENTS_PER_ITEM} commentaires au maximum par élément.")
+    elif _spectator_over_quota(request, me, trip):
+        pass
     else:
-        Comment.objects.create(trip=trip, author=me, body=body, **{field: obj})
+        Comment.objects.create(trip=trip, author=None if visitor else me, is_visitor=visitor,
+                               author_name=name, body=body, **{field: obj})
     return redirect(back)
+
+
+def _comment_target_trip_id(obj):
+    return obj.destination.trip_id if isinstance(obj, Lodging) else obj.trip_id
+
 
 
 @require_POST
@@ -1561,30 +1584,92 @@ def comment_delete(request, comment_pk):
     return redirect(back)
 
 
-@login_required
 @require_POST
 def feedback_add(request):
     message = (request.POST.get("message") or "").strip()
     page = (request.POST.get("page") or "")[:60]
-    path = (request.POST.get("path") or "")[:200]
-    back = path if path.startswith("/") and url_has_allowed_host_and_scheme(
-        path, allowed_hosts={request.get_host()}) else "/"
-    if page in {"trip_join", "spectator_start"}:
-        path = ""                       # ces adresses contiennent un jeton secret
-    trip = None
+    raw_path = request.POST.get("path") or ""
+    back = raw_path[:200] if raw_path.startswith("/") and url_has_allowed_host_and_scheme(
+        raw_path, allowed_hosts={request.get_host()}) else "/"
+    path = "" if page in {"trip_join", "spectator_start"} else raw_path[:200]
+    name = " ".join((request.POST.get("name") or "").split())[:30]
+    user = request.user if request.user.is_authenticated else None
+    trip, visitor = None, False
     trip_id = _int_or_none(request.POST.get("trip"))
     if trip_id is not None:
-        trip = Trip.objects.filter(pk=trip_id, members__user=request.user).first()
-    recent = Feedback.objects.filter(
-        user=request.user, created_at__gte=timezone.now() - timedelta(hours=1)).count()
+        if user is not None:
+            trip = Trip.objects.filter(pk=trip_id, members__user=user).first()
+        if trip is None and str(trip_id) in (request.session.get(SPECTATOR_KEY) or []):
+            trip = Trip.objects.filter(pk=trip_id, allow_spectators=True,
+                                       spectator_contribute=True).first()
+            if trip is None:
+                raise PermissionDenied
+            visitor = True
+    if user is None and not visitor:
+        return redirect_to_login(request.get_full_path())
+    since = timezone.now() - timedelta(hours=1)
+    if user is not None:
+        recent = Feedback.objects.filter(user=user, created_at__gte=since).count()
+    else:
+        recent = Feedback.objects.filter(trip=trip, user=None, created_at__gte=since).count()
     if not 3 <= len(message) <= 2000:
         messages.error(request, "Votre message doit faire entre 3 et 2000 caractères.")
     elif recent >= 10:
         messages.error(request, "Vous avez envoyé beaucoup de suggestions : réessayez plus tard.")
+    elif visitor and not spectator_quota_left(trip):
+        messages.error(request, "Trop de contributions de visiteurs en peu de temps : "
+                                "réessayez dans une heure.")
     else:
-        Feedback.objects.create(user=request.user, trip=trip, page_name=page,
-                                path=path, message=message)
+        Feedback.objects.create(user=user, trip=trip, page_name=page, path=path,
+                                author_name=name if visitor else "", message=message)
         messages.success(request, "Merci ! Votre suggestion a été enregistrée.")
     return redirect(back)
 
+
+SPECTATOR_WRITES_PER_HOUR = 30
+MAX_DESTINATIONS = 100
+MAX_MEALS = 300
+SPECTATOR_OPTIONS = {"budget": "spectator_budget", "contribute": "spectator_contribute"}
+
+
+def real_member(me):
+    """Les spectateurs n'ont pas de membre : leurs ajouts n'ont pas d'auteur."""
+    return None if getattr(me, "is_spectator", False) else me
+
+
+def spectator_quota_left(trip):
+    """Vrai tant que les visiteurs n'ont pas atteint la limite horaire de contributions."""
+    since = timezone.now() - timedelta(hours=1)
+    used = (
+        Destination.objects.filter(trip=trip, proposed_by=None, created_at__gte=since).count()
+        + DateOption.objects.filter(trip=trip, proposed_by=None, created_at__gte=since).count()
+        + Lodging.objects.filter(destination__trip=trip, proposed_by=None,
+                                 created_at__gte=since).count()
+        + Meal.objects.filter(trip=trip, proposed_by=None, created_at__gte=since).count()
+        + Comment.objects.filter(trip=trip, is_visitor=True, created_at__gte=since).count()
+        + Feedback.objects.filter(trip=trip, user=None, created_at__gte=since).count())
+    return used < SPECTATOR_WRITES_PER_HOUR
+
+
+def _spectator_over_quota(request, me, trip):
+    if getattr(me, "is_spectator", False) and not spectator_quota_left(trip):
+        messages.error(request, "Trop de contributions de visiteurs en peu de temps : "
+                                "réessayez dans une heure.")
+        return True
+    return False
+
+
+@login_required
+@require_POST
+def spectator_option(request, pk, option):
+    field = SPECTATOR_OPTIONS.get(option)
+    if field is None:
+        raise Http404
+    trip, me = get_trip_and_member(request, pk)
+    if not me.can_manage:
+        raise PermissionDenied
+    setattr(trip, field, request.POST.get("on") == "1")
+    trip.save(update_fields=[field])
+    messages.success(request, "Option enregistrée.")
+    return redirect("trip_detail", pk=trip.pk)
 

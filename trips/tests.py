@@ -2697,8 +2697,7 @@ class FeedbackTests(TestCase):
         self.assertEqual(r.status_code, 302)
         self.assertTrue(r["Location"].startswith(reverse("login")))
         self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
-        r = self.send()
-        self.assertTrue(r["Location"].startswith(reverse("login")))
+        self.assertEqual(self.send().status_code, 403)       # contributions fermées aux spectateurs
         self.assertEqual(Feedback.objects.count(), 0)
         self.client.force_login(self.user)
         self.assertEqual(self.client.get(self.url).status_code, 405)
@@ -2713,4 +2712,345 @@ class FeedbackTests(TestCase):
         member = self.client.get(reverse("destination_list", args=[self.trip.pk])).content.decode()
         self.assertIn(self.url, member)
         self.assertIn(f'name="trip" value="{self.trip.pk}"', member)
+
+class VisitorTests(TestCase):
+    def setUp(self):
+        U = get_user_model()
+        names = ("orga", "bob", "carl")
+        self.users = {n: U.objects.create_user(f"login_{n}", password="pw-test-123")
+                      for n in names}
+        self.trip = Trip.objects.create(name="Test", allow_spectators=True,
+                                        spectator_budget=True, spectator_contribute=True)
+        labels = {"orga": "Orga", "bob": "Bobinette", "carl": "Carlito"}
+        self.m = {n: Member.objects.create(trip=self.trip, display_name=labels[n],
+                                           user=self.users[n], is_organizer=(n == "orga"))
+                  for n in names}
+        self.pk = self.trip.pk
+        self.dest = Destination.objects.create(trip=self.trip, name="Chamonix",
+                                               proposed_by=self.m["bob"])
+        self.opt = DateOption.objects.create(trip=self.trip, start_date=date(2027, 2, 6),
+                                             end_date=date(2027, 2, 13),
+                                             proposed_by=self.m["bob"])
+        self.lodging = Lodging.objects.create(destination=self.dest, name="Chalet",
+                                              proposed_by=self.m["bob"])
+        self.meal = Meal.objects.create(trip=self.trip, title="Dîner", day=1, meal_type=4,
+                                        proposed_by=self.m["bob"])
+        courses = Expense.objects.create(trip=self.trip, paid_by=self.m["carl"],
+                                         created_by=self.m["carl"], label="Courses",
+                                         amount=Decimal("30"), split_mode="custom")
+        for n in names:
+            ExpenseShare.objects.create(expense=courses, member=self.m[n], amount=Decimal("10"))
+        gift = Expense.objects.create(trip=self.trip, paid_by=self.m["bob"],
+                                      created_by=self.m["bob"], label="Cadeau secret",
+                                      amount=Decimal("87"), split_mode="custom")
+        for n in ("bob", "carl"):
+            ExpenseShare.objects.create(expense=gift, member=self.m[n], amount=Decimal("43.50"))
+        gift.hidden_from.set([self.m["orga"]])
+
+    # --- outils -----------------------------------------------------------------------------
+
+    def enter(self):
+        self.client.get(reverse("spectator_start", args=[self.trip.invite_token]))
+
+    def flags(self, **flags):
+        Trip.objects.filter(pk=self.pk).update(**flags)
+
+    def is_refused(self, response):
+        if response.status_code == 403:
+            return True
+        return response.status_code == 302 and response["Location"].startswith(reverse("login"))
+
+    def nav(self):
+        html = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        return html.split('<nav class="tabs"')[1].split("</nav>")[0]
+
+    def post_destination(self, name):
+        return self.client.post(reverse("destination_add", args=[self.pk]), {
+            "name": name, "nearest_station": "", "url": "", "notes": "", "extra_text": ""})
+
+    # --- budget -------------------------------------------------------------------------------
+
+    def test_visitors_see_the_budget_without_hidden_expenses(self):
+        self.enter()
+        page = self.client.get(reverse("budget", args=[self.pk]))
+        self.assertEqual(page.status_code, 200)
+        html = page.content.decode()
+        self.assertIn("Courses", html)
+        self.assertIn("30,00", html)
+        for forbidden in ("Cadeau secret", "87,00", "43,50", "cachées à"):
+            self.assertNotIn(forbidden, html)
+        self.assertNotIn("Marquer comme payé", html)
+        self.assertNotIn(reverse("expense_add", args=[self.pk]), html)
+        self.assertNotIn(reverse("solidarity", args=[self.pk]), html)
+        self.assertNotIn("Votre part, en détail", html)
+
+    def test_budget_tab_and_page_follow_the_option(self):
+        self.enter()
+        budget_url = reverse("budget", args=[self.pk])
+        self.assertIn(f'href="{budget_url}"', self.nav())
+        self.flags(spectator_budget=False)
+        self.assertNotIn(f'href="{budget_url}"', self.nav())
+        self.assertEqual(self.client.get(budget_url).status_code, 403)
+
+    def test_visitors_cannot_act_on_the_budget(self):
+        self.enter()
+        expense = Expense.objects.get(label="Courses")
+        for name in ("expense_add", "settle", "solidarity"):
+            self.assertTrue(self.is_refused(
+                self.client.post(reverse(name, args=[self.pk]), {})), name)
+        for name in ("expense_add", "solidarity"):
+            self.assertTrue(self.is_refused(
+                self.client.get(reverse(name, args=[self.pk]))), name)
+        for name in ("expense_edit", "expense_delete"):
+            self.assertTrue(self.is_refused(
+                self.client.post(reverse(name, args=[expense.pk]), {})), name)
+        self.assertTrue(Expense.objects.filter(pk=expense.pk).exists())
+
+    # --- ajouts ---------------------------------------------------------------------------------
+
+    def test_visitors_can_add_destinations_periods_lodgings_and_meals(self):
+        self.enter()
+        self.assertEqual(self.post_destination("Lisbonne").status_code, 302)
+        self.assertIsNone(Destination.objects.get(name="Lisbonne").proposed_by)
+        start = djtz.localdate() + timedelta(days=60)
+        r = self.client.post(reverse("date_list", args=[self.pk]), {
+            "start_date": start.isoformat(),
+            "end_date": (start + timedelta(days=5)).isoformat()})
+        self.assertEqual(r.status_code, 302)
+        self.assertIsNone(DateOption.objects.get(start_date=start).proposed_by)
+        r = self.client.post(reverse("lodging_add", args=[self.dest.pk]), {"name": "Studio"})
+        self.assertEqual(r.status_code, 302)
+        self.assertIsNone(Lodging.objects.get(name="Studio").proposed_by)
+        r = self.client.post(reverse("meal_add", args=[self.pk]), {
+            "title": "Raclette", "day": 1, "meal_type": 4, "recipe": "",
+            "items_text": "500 g fromage"})
+        self.assertEqual(r.status_code, 302)
+        meal = Meal.objects.get(title="Raclette")
+        self.assertIsNone(meal.proposed_by)
+        self.assertEqual(meal.items.count(), 1)
+
+    def test_add_links_are_shown_to_visitors_but_not_import_links(self):
+        self.enter()
+        expectations = {
+            "destination_list": reverse("destination_add", args=[self.pk]),
+            "lodgings": reverse("lodging_add", args=[self.dest.pk]),
+            "meals": reverse("meal_add", args=[self.pk]),
+        }
+        for name, url in expectations.items():
+            html = self.client.get(reverse(name, args=[self.pk])).content.decode()
+            self.assertIn(url, html, name)
+        destinations = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        self.assertNotIn(reverse("destination_import", args=[self.pk]), destinations)
+        dates = self.client.get(reverse("date_list", args=[self.pk])).content.decode()
+        self.assertIn('id="pick-form"', dates)
+        self.assertNotIn(reverse("date_import", args=[self.pk]), dates)
+
+    def test_closed_contributions_mean_read_only(self):
+        self.flags(spectator_contribute=False)
+        self.enter()
+        for name, args in (("destination_add", [self.pk]), ("lodging_add", [self.dest.pk]),
+                           ("meal_add", [self.pk])):
+            url = reverse(name, args=args)
+            self.assertTrue(self.is_refused(self.client.get(url)), name)
+            self.assertTrue(self.is_refused(
+                self.client.post(url, {"name": "Piège", "title": "Piège"})), name)
+        r = self.client.post(reverse("date_list", args=[self.pk]),
+                             {"start_date": "2030-01-01", "end_date": "2030-01-05"})
+        self.assertTrue(self.is_refused(r))
+        self.assertEqual((Destination.objects.count(), DateOption.objects.count(),
+                          Lodging.objects.count(), Meal.objects.count()), (1, 1, 1, 1))
+        dates = self.client.get(reverse("date_list", args=[self.pk])).content.decode()
+        self.assertNotIn('id="pick-form"', dates)
+
+    def test_visitors_still_cannot_edit_delete_vote_import_or_add_legs_and_polls(self):
+        comment = Comment.objects.create(trip=self.trip, author=self.m["bob"], body="x",
+                                         destination=self.dest)
+        self.enter()
+        pk = self.pk
+        posts = [("destination_edit", [self.dest.pk]), ("destination_delete", [self.dest.pk]),
+                 ("destination_import", [pk]), ("date_import", [pk]),
+                 ("date_edit", [self.opt.pk]), ("date_delete", [self.opt.pk]),
+                 ("lodging_edit", [self.lodging.pk]), ("lodging_delete", [self.lodging.pk]),
+                 ("leg_add", [pk]), ("poll_add", [pk]), ("meal_edit", [self.meal.pk]),
+                 ("meal_delete", [self.meal.pk]), ("votes", [pk]),
+                 ("destination_vote", [self.dest.pk]), ("date_vote", [self.opt.pk]),
+                 ("lodging_vote", [self.lodging.pk]), ("roles", [pk]), ("trip_tabs", [pk]),
+                 ("spectators_toggle", [pk]), ("destination_shortlist", [self.dest.pk]),
+                 ("comment_delete", [comment.pk])]
+        for name, args in posts:
+            r = self.client.post(reverse(name, args=args),
+                                 {"name": "Piège", "score": "2", "body": "x"})
+            self.assertTrue(self.is_refused(r), name)
+        for name, args in (("destination_edit", [self.dest.pk]), ("destination_import", [pk]),
+                           ("date_import", [pk]), ("date_edit", [self.opt.pk]),
+                           ("lodging_edit", [self.lodging.pk]), ("leg_add", [pk]),
+                           ("poll_add", [pk]), ("meal_edit", [self.meal.pk]), ("votes", [pk]),
+                           ("roles", [pk]), ("trip_tabs", [pk])):
+            self.assertTrue(self.is_refused(self.client.get(reverse(name, args=args))), name)
+        self.assertEqual((Destination.objects.count(), DateOption.objects.count(),
+                          Lodging.objects.count(), Meal.objects.count(),
+                          Comment.objects.count()), (1, 1, 1, 1, 1))
+
+    # --- limites --------------------------------------------------------------------------------
+
+    def test_hourly_quota_of_visitor_contributions(self):
+        for i in range(29):
+            Destination.objects.create(trip=self.trip, name=f"V{i}")
+        self.enter()
+        self.post_destination("Trentième")
+        self.post_destination("Trente et unième")
+        self.assertTrue(Destination.objects.filter(name="Trentième").exists())
+        self.assertFalse(Destination.objects.filter(name="Trente et unième").exists())
+
+    def test_members_are_not_limited_by_the_visitor_quota(self):
+        for i in range(40):
+            Destination.objects.create(trip=self.trip, name=f"V{i}")
+        self.client.force_login(self.users["bob"])
+        self.post_destination("Membre")
+        self.assertEqual(Destination.objects.get(name="Membre").proposed_by, self.m["bob"])
+
+    def test_destination_cap_applies_to_everyone(self):
+        for i in range(99):
+            Destination.objects.create(trip=self.trip, name=f"M{i}", proposed_by=self.m["bob"])
+        self.client.force_login(self.users["bob"])
+        self.post_destination("Cent et unième")
+        self.assertFalse(Destination.objects.filter(name="Cent et unième").exists())
+
+    # --- commentaires ---------------------------------------------------------------------------
+
+    def comment_url(self):
+        return reverse("comment_add", args=["destination", self.dest.pk])
+
+    def test_visitor_comments_with_an_optional_name(self):
+        self.enter()
+        url = self.comment_url()
+        self.client.post(url, {"body": "Super", "name": "Tante Jo"})
+        self.client.post(url, {"body": "Anonyme", "name": ""})
+        self.client.post(url, {"body": "Long", "name": "x" * 50})
+        comments = list(Comment.objects.order_by("id"))
+        self.assertTrue(all(c.author is None and c.is_visitor for c in comments))
+        self.assertEqual([c.author_name for c in comments], ["Tante Jo", "", "x" * 30])
+        page = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        for expected in ("Tante Jo", "Visiteur", "(visiteur)"):
+            self.assertIn(expected, page)
+        self.assertIn('name="name"', page)
+
+    def test_members_never_get_the_name_field(self):
+        self.client.force_login(self.users["bob"])
+        page = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        self.assertNotIn('name="name"', page)
+
+    def test_visitors_see_member_comments_but_cannot_delete_anything(self):
+        comment = Comment.objects.create(trip=self.trip, author=self.m["bob"],
+                                         body="Beau coin", destination=self.dest)
+        self.enter()
+        html = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        self.assertIn("Beau coin", html)
+        self.assertIn("Bobinette", html)
+        self.assertNotIn("Supprimer ce commentaire", html)
+        r = self.client.post(reverse("comment_delete", args=[comment.pk]))
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue(Comment.objects.filter(pk=comment.pk).exists())
+
+    def test_managers_moderate_visitor_comments_but_ordinary_members_cannot(self):
+        self.enter()
+        self.client.post(self.comment_url(), {"body": "Passage", "name": "Tante Jo"})
+        comment = Comment.objects.get()
+        self.client.force_login(self.users["bob"])
+        self.assertEqual(self.client.post(reverse("comment_delete", args=[comment.pk])).status_code, 403)
+        self.client.force_login(self.users["orga"])
+        page = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        self.assertIn("Tante Jo", page)
+        self.assertIn("Supprimer ce commentaire", page)
+        self.client.post(reverse("comment_delete", args=[comment.pk]))
+        self.assertEqual(Comment.objects.count(), 0)
+
+    def test_comments_are_hidden_from_visitors_when_contributions_are_closed(self):
+        Comment.objects.create(trip=self.trip, author=self.m["bob"], body="Opinion franche",
+                               destination=self.dest)
+        self.flags(spectator_contribute=False)
+        self.enter()
+        html = self.client.get(reverse("destination_list", args=[self.pk])).content.decode()
+        self.assertNotIn("Opinion franche", html)
+        self.assertNotIn("Commentaires (", html)
+        self.assertEqual(self.client.post(self.comment_url(), {"body": "X"}).status_code, 403)
+
+    # --- suggestions ----------------------------------------------------------------------------
+
+    def feedback(self, **extra):
+        data = {"message": "Bravo", "name": "Tante Jo", "page": "destination_list",
+                "path": f"/voyages/{self.pk}/destinations/", "trip": self.pk}
+        data.update(extra)
+        return self.client.post(reverse("feedback_add"), data)
+
+    def test_visitor_feedback_with_an_optional_name(self):
+        self.enter()
+        self.assertEqual(self.feedback().status_code, 302)
+        fb = Feedback.objects.get()
+        self.assertEqual((fb.user, fb.trip, fb.author_name), (None, self.trip, "Tante Jo"))
+        self.feedback(name="")
+        self.assertEqual(Feedback.objects.order_by("id").last().author_name, "")
+
+    def test_visitor_feedback_needs_open_contributions_and_a_matching_session(self):
+        self.flags(spectator_contribute=False)
+        self.enter()
+        self.assertEqual(self.feedback().status_code, 403)
+        self.flags(spectator_contribute=True)
+        other = Trip.objects.create(name="Autre", allow_spectators=True, spectator_contribute=True)
+        r = self.feedback(trip=other.pk)               # pas de session spectateur pour ce voyage
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith(reverse("login")))
+        self.assertEqual(Feedback.objects.count(), 0)
+
+    def test_visitor_feedback_rate_limit_per_trip(self):
+        for i in range(10):
+            Feedback.objects.create(user=None, trip=self.trip, message=f"message {i}")
+        self.enter()
+        self.feedback()
+        self.assertEqual(Feedback.objects.count(), 10)
+
+    def test_footer_form_for_visitors_only_when_contributions_are_open(self):
+        self.enter()
+        url = reverse("feedback_add")
+        self.assertIn(url, self.client.get(reverse("destination_list", args=[self.pk])).content.decode())
+        self.flags(spectator_contribute=False)
+        self.assertNotIn(url, self.client.get(reverse("destination_list", args=[self.pk])).content.decode())
+
+    # --- options et bandeau ---------------------------------------------------------------------
+
+    def test_only_managers_change_the_options(self):
+        def url(option):
+            return reverse("spectator_option", args=[self.pk, option])
+
+        self.client.force_login(self.users["bob"])
+        self.assertEqual(self.client.post(url("budget"), {"on": ""}).status_code, 403)
+        self.client.force_login(self.users["orga"])
+        self.client.post(url("budget"), {"on": ""})
+        self.client.post(url("contribute"), {"on": ""})
+        self.trip.refresh_from_db()
+        self.assertFalse(self.trip.spectator_budget or self.trip.spectator_contribute)
+        self.client.post(url("budget"), {"on": "1"})
+        self.client.post(url("contribute"), {"on": "1"})
+        self.trip.refresh_from_db()
+        self.assertTrue(self.trip.spectator_budget and self.trip.spectator_contribute)
+        self.assertEqual(self.client.post(url("autre"), {"on": "1"}).status_code, 404)
+        self.client.logout()
+        self.enter()
+        self.assertTrue(self.is_refused(self.client.post(url("budget"), {"on": ""})))
+        self.assertTrue(Trip.objects.get(pk=self.pk).spectator_budget)
+
+    def test_trip_page_shows_the_option_buttons_to_managers_only(self):
+        url = reverse("spectator_option", args=[self.pk, "budget"])
+        page = reverse("trip_detail", args=[self.pk])
+        self.client.force_login(self.users["bob"])
+        self.assertNotContains(self.client.get(page), url)
+        self.client.force_login(self.users["orga"])
+        self.assertContains(self.client.get(page), url)
+
+    def test_banner_wording_follows_the_option(self):
+        self.enter()
+        url = reverse("trip_detail", args=[self.pk])
+        self.assertContains(self.client.get(url), "Vous participez en visiteur")
+        self.flags(spectator_contribute=False)
+        self.assertContains(self.client.get(url), "lecture seule")
 

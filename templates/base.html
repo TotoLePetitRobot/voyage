@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{% static 'css/site.css' %}">
 </head>
 
-{% if user.is_authenticated and not request.spectator %}
+{% if show_feedback %}
 <footer class="foot">
   <details class="feedback">
     <summary>Une idée pour améliorer cette page ?</summary>
@@ -16,6 +16,7 @@
       <input type="hidden" name="page" value="{{ request.resolver_match.url_name }}">
       <input type="hidden" name="path" value="{{ request.path }}">
       {% if trip.pk %}<input type="hidden" name="trip" value="{{ trip.pk }}">{% endif %}
+      {% if request.spectator %}<p><input type="text" name="name" maxlength="30" placeholder="Votre nom (facultatif)"></p>{% endif %}
       <textarea name="message" rows="3" maxlength="2000" required placeholder="Ce qui manque, ce qui est confus, ce qui pourrait être mieux…"></textarea>
       <button>Envoyer</button>
     </form>
@@ -38,7 +39,7 @@
 
 {% if request.spectator %}
 <div class="spectator-bar"><div class="in">
-  Vous consultez ce voyage en spectateur (lecture seule).
+  {% if request.spectator_contribute %}Vous participez en visiteur : vous pouvez proposer, commenter et suggérer, mais ni voter ni modifier.{% else %}Vous consultez ce voyage en spectateur (lecture seule).{% endif %}
   <a href="{% url 'trip_join' trip.invite_token %}">Se connecter ou rejoindre</a> ·
   <form method="post" action="{% url 'spectator_stop' trip.pk %}" style="display:inline">{% csrf_token %}<button>Quitter</button></form>
 </div></div>

@@ -17,7 +17,7 @@
   {% if prev_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ prev_offset }}">◂ Mois précédent</a>{% endif %}
   {% if next_offset is not None %}<a href="?mois={{ months_shown }}&amp;decalage={{ next_offset }}">Mois suivant ▸</a>{% endif %}
 </form>
-{% if not request.spectator %}
+{% if can_add %}
 <p id="pick-hint" class="pick-hint" aria-live="polite">Cliquez sur le jour d’arrivée, puis sur le jour de départ.</p>
 <div id="pick-panel" class="pick-panel" hidden>
   <p><b id="pick-text"></b></p>
@@ -53,20 +53,20 @@
       <form method="post" action="{% url 'date_delete' o.pk %}" style="display:inline"
             onsubmit="return confirm('Supprimer cette période ?')">{% csrf_token %}<button>Supprimer</button></form>
     {% endif %}
-  {% include "trips/_comments.html" with obj=o kind="date" can_comment=can_vote %}
+  {% include "trips/_comments.html" with obj=o kind="date" can_comment=can_add %}
   </div>
 </details>
 {% empty %}
   <p>Aucune période proposée.</p>
 {% endfor %}
 
-{% if not request.spectator %}
+{% if can_add %}
 <h2>Ou saisir les dates à la main</h2>
 <form method="post">{% csrf_token %}
   {% for f in form %}<p>{{ f.errors }}{{ f.label_tag }} {{ f }}</p>{% endfor %}
   <button>Ajouter</button>
 </form>
-<p><a href="{% url 'date_import' trip.pk %}">Importer plusieurs périodes depuis un fichier CSV</a></p>
+{% if not request.spectator %}<p><a href="{% url 'date_import' trip.pk %}">Importer plusieurs périodes depuis un fichier CSV</a></p>{% endif %}
 {% endif %}
 <p><a href="{% url 'trip_detail' trip.pk %}">Retour au voyage</a></p>
 
@@ -79,7 +79,7 @@
 })();
 </script>
 
-{% if not request.spectator %}
+{% if can_add %}
 <script>
 (function () {
   var cal = document.getElementById("pick-calendar");

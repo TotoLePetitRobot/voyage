@@ -72,4 +72,6 @@ urlpatterns = [
     path("commentaires/<int:comment_pk>/supprimer/", views.comment_delete,
          name="comment_delete"),
     path("suggestions/envoyer/", views.feedback_add, name="feedback_add"),
+    path("voyages/<int:pk>/spectateurs/<str:option>/", views.spectator_option,
+         name="spectator_option"),
 ]

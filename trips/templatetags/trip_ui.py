@@ -1,7 +1,7 @@
 from django import template
 
 from ..models import TRIP_TABS, TRIP_TAB_LABELS, TRIP_TAB_URL_NAMES
-from ..spectator import SPECTATOR_VIEWS
+from ..spectator import spectator_views
 
 register = template.Library()
 
@@ -19,6 +19,7 @@ def trip_tabs_for(context, trip):
     hidden = set(config.get("hidden", []))
     names = [n for n in names if n not in hidden]
     if getattr(request, "spectator", False):
-        names = [n for n in names if TRIP_TAB_URL_NAMES[n] in SPECTATOR_VIEWS]
+        allowed = spectator_views(trip)
+        names = [n for n in names if TRIP_TAB_URL_NAMES[n] in allowed]
     return [{"label": TRIP_TAB_LABELS[n], "url_name": TRIP_TAB_URL_NAMES[n],
              "current": current in _GROUPS[n]} for n in names]
